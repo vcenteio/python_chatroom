@@ -18,40 +18,19 @@ class Server:
         self.broadcast_q = queue.Queue()
         self.lock = threading.Lock()
     
-    # def broadcast(self):
-    #     while self.running.is_set():
-    #         # block until a new message for broadcast is a available
-    #         try:
-    #             print("Starting the broadcaster")
-    #             message = self.broadcast_q.get() 
-    #             # pack the message with header, encode it and sent to all clients
-    #             packed_msg = create_header(len(message)) + message.encode()
-    #             for client in self.clients:
-    #                 client.socket.sendall(packed_msg)
-    #         except:
-    #             continue
-
-    def broadcast(self, message):
-        packed_msg = create_header(len(message)) + message.encode()
+    def broadcast(self, data: dict):
+        message = ClientMessage(Command.SEND, data["from"], data["data"])
         for client in self.clients:
-            client.socket.sendall(packed_msg)
+            client.socket.sendall(message.packed_msg)
                 
 
     def handle_client(self, client: ClientEntry):
         client.active.set()
-
         while client.active.is_set():
-            buffer = client.socket.recv(HEADER_SIZE)
-            if len(buffer) == HEADER_SIZE:
-                msg_lenght = get_header(buffer)
-                message = client.socket.recv(msg_lenght).decode()
-                print(f"{client.nickname}: {message}")
-                self.broadcast_q.put(message)
-                self.broadcast(message)
-            else:
-                print(f"[SERVER] Buffer lenght less than 4: {len(buffer)} {client.socket.fileno()} {client.socket.type} {client.socket.getblocking()}")
-                client.active.clear()
-                sys.exit()
+            code, message = receive(client.socket)
+            message = json.loads(message)
+            print(f"[SERVER] (Command: {code}) {message['from']}: {message['data']}")
+            self.broadcast(message)
     
     def handle_connections(self):
         print("Starting the server")
@@ -73,8 +52,8 @@ class Server:
         self.running.set()
         threading.Thread(target=self.handle_connections(), daemon=True).start()
 
+
+
 if __name__ == "__main__":
     server = Server(server_IP, server_Port)
     threading.Thread(target=server.run(), daemon=True).start()
-    # server.running.clear()
-    # sys.exit()

@@ -1,7 +1,7 @@
 ﻿import socket
 
 FORMAT = "utf-8"
-HEADER_SIZE = 4 
+HEADER_SIZE = 5 
 RSA_KEY = tuple()
 F_KEY = bytes()
 
