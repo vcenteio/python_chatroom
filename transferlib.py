@@ -13,20 +13,18 @@ class Command:
 
 class ClientMessage:
 
-    def __init__(self, code, _from, data=b""):
+    def __init__(self, code: int, _from: str, data=None):
         self.code = code
         self._from = _from
-        self.data = data if type(data) == bytes else data.encode()
-        self.header = self.create_header()
-        self.packed_msg = self.header + self.serialized
+        self.data = data
+        self.packed = self.create_header() + self.serialized()
         self.time = time.asctime()
 
-    def create_header(self):
-        return struct.pack("<bI", self.code, len(self.serialized))
-    
-    @property
-    def serialized(self):
-        return json.dumps({'from': self._from, 'data': self.data.decode()}).encode()
+    def serialized(self) -> bytes:
+        return json.dumps({'code': self.code, 'from': self._from, 'data': self.data}).encode()
+
+    def create_header(self) -> bytes:
+        return struct.pack("<I", len(self.serialized()))
 
 
 
@@ -36,14 +34,8 @@ class ClientMessage:
 # def send(socket: socket.socket, packed_msg: bytes):
 #     socket.sendall(packed_msg)
 
-def receive(socket: socket.socket) -> tuple:
-    # receive header and unpack it
-    buffer = socket.recv(HEADER_SIZE)
-    header = struct.unpack("<bI", buffer)
-
-    # get the code and lenght of the message so we can receive the
-    # content of the message
-    code, msg_lenght = header
-    message = socket.recv(msg_lenght)
-
-    return (code, message)
+def receive(socket: socket.socket) -> bytes:
+    # receive header and unpack the message lenght
+    msg_lenght = struct.unpack("<I", socket.recv(HEADER_SIZE))[0]
+    # return the content of the message
+    return socket.recv(msg_lenght)

@@ -15,20 +15,20 @@ class Client:
 
     def write_to_chatbox(self):
         while self.running.is_set():
-            code, message = self.server_broadcast_queue.get()
+            message = self.server_broadcast_queue.get()
             #for now just print
-            print(f"[SERVER BROADCAST] (Command: {code}) {message['from']}: {message['data']}")
+            print(f"[SERVER BROADCAST] (Command: {message['code']}) {message['from']}: {message['data']}")
 
     def handle_receive(self):
         while self.running.is_set():
-            code, message = receive(self.socket)
-            message = json.loads(message)
-            self.server_broadcast_queue.put((code, message))
+            buffer = receive(self.socket)
+            message = json.loads(buffer)
+            self.server_broadcast_queue.put(message)
 
     
-    def handle_send(self, data: bytes):
+    def handle_send(self, data: str):
         message = ClientMessage(Command.SEND, self.nickname, data)
-        self.socket.sendall(message.packed_msg)
+        self.socket.sendall(message.packed)
 
     def handle_connect(self, server_ip, server_port):
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -50,4 +50,4 @@ if __name__ == "__main__":
     while True:
         time.sleep(0.1)
         msg = input("Insert message: ")
-        client.handle_send(msg.rstrip().encode())
+        client.handle_send(msg.rstrip())
