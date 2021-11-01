@@ -3,10 +3,11 @@ from constants import *
 import sys
 
 class ClientEntry:
-    def __init__(self, socket: socket.socket , address: tuple, nickname: str):
+    def __init__(self, socket: socket.socket , address: tuple, nickname: str, color: str):
         self.socket = socket
         self.address = address
         self.nickname = nickname
+        self.color = color
         self.active = threading.Event()
     
     def __str__(self):
@@ -21,28 +22,40 @@ class Server:
         self.broadcast_q = queue.Queue()
         self.lock = threading.Lock()
     
-    def broadcast(self, data: dict):
-        message = ClientMessage(Command.SEND, data["from"], data["data"])
+    def broadcast(self, message: ClientMessage):
+        # message = ClientMessage(Command.SEND, data["from"], data["data"])
         for client in self.clients:
-            self.clients[client].socket.sendall(message.packed)
+            self.clients[client].socket.sendall(message.pack())
                 
 
     def handle_client(self, client: ClientEntry):
         client.active.set()
         while client.active.is_set():
-            buffer = receive(client.socket)
-            message = json.loads(buffer)
-            print(f"[SERVER] (Command: {message['code']}) {client.nickname}: {message['data']}")
+            buffer = json.loads(receive(client.socket))
+            message = ClientMessage(buffer["code"], buffer["from"], buffer["data"])
+            # print(f"[SERVER] (Command: {message['code']}) {client.nickname}: {message['data']}")
+            print(f"[SERVER] (Command: {message.code}) {message._from}: {message.data}")
             self.broadcast(message)
     
     def handle_connections(self):
-        print("Starting the server")
+        DEBUG = 0
+        print(f"[SERVER] Starting the server ({server_IP}:{server_Port}) ...")
         while self.running.is_set():
             client_socket, client_address = self.socket.accept()
             print(f"New client connection: {client_address}")
-            new_client = ClientEntry(client_socket, client_address, "vitor")
+
+            initial_data = json.loads(receive(client_socket))
+            if DEBUG: print(initial_data)
+
+            new_client = ClientEntry(
+                client_socket,
+                client_address,
+                initial_data["nickname"],
+                initial_data["color"]
+            )
             self.clients.update({new_client.nickname: new_client})
-            if self.clients: print(self.clients)
+            if DEBUG: print(self.clients)
+
             threading.Thread(
                 target=self.handle_client,
                 args=[new_client],

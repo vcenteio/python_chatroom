@@ -1,6 +1,6 @@
-﻿from transferlib import *
+﻿from server import ClientEntry
+from transferlib import *
 from constants import *
-import sys
 
 
 
@@ -17,18 +17,17 @@ class Client:
         while self.running.is_set():
             message = self.server_broadcast_queue.get()
             #for now just print
-            print(f"[SERVER BROADCAST] (Command: {message['code']}) {message['from']}: {message['data']}")
+            print(f"[SERVER BROADCAST] (Command: {message.code}) {message._from}: {message.data}")
 
     def handle_receive(self):
         while self.running.is_set():
-            buffer = receive(self.socket)
-            message = json.loads(buffer)
+            buffer = json.loads(receive(self.socket))
+            message = ClientMessage(buffer["code"], buffer["from"], buffer["data"])
             self.server_broadcast_queue.put(message)
-
     
-    def handle_send(self, data: str):
-        message = ClientMessage(Command.SEND, self.nickname, data)
-        self.socket.sendall(message.packed)
+    def handle_send(self, data: bytes):
+        message = ClientMessage(Command.SEND, self.nickname, data.decode())
+        self.socket.sendall(message.pack())
 
     def handle_connect(self, server_ip, server_port):
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -37,6 +36,10 @@ class Client:
     def run(self):
         self.handle_connect(server_IP, server_Port)
         self.running.set()
+
+        initial_data = json.dumps({"nickname": self.nickname, "color": self.color})
+        send(self.socket, initial_data.encode())
+
         threading.Thread(target=self.write_to_chatbox, daemon=True).start()
         threading.Thread(target=self.handle_receive, daemon=True).start()
 
@@ -49,5 +52,5 @@ if __name__ == "__main__":
 
     while True:
         time.sleep(0.1)
-        msg = input("Insert message: ")
-        client.handle_send(msg.rstrip())
+        msg = " ".join(input("Insert message: ").split("\n"))
+        client.handle_send(msg.rstrip().encode())

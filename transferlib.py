@@ -1,4 +1,5 @@
 ﻿import time
+import sys
 import struct
 import socket
 import queue
@@ -17,22 +18,23 @@ class ClientMessage:
         self.code = code
         self._from = _from
         self.data = data
-        self.packed = self.create_header() + self.serialized()
         self.time = time.asctime()
 
-    def serialized(self) -> bytes:
-        return json.dumps({'code': self.code, 'from': self._from, 'data': self.data}).encode()
+    def pack(self):
+        serialized = json.dumps({
+            'code': self.code,
+            'from': self._from,
+            'data': self.data
+        }).encode()
+        header = struct.pack("<I", len(serialized))
+        return header + serialized
 
-    def create_header(self) -> bytes:
-        return struct.pack("<I", len(self.serialized()))
 
 
+def send(socket: socket.socket, data: bytes):
+    header = struct.pack("<I", len(data))
+    socket.sendall(header + data)
 
-# def get_header(buffer):
-#     return struct.unpack("<Ib", buffer)
-
-# def send(socket: socket.socket, packed_msg: bytes):
-#     socket.sendall(packed_msg)
 
 def receive(socket: socket.socket) -> bytes:
     # receive header and unpack the message lenght
