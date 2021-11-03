@@ -22,9 +22,16 @@ class Client:
 
     def handle_receive(self):
         while self.running.is_set():
-            buffer = json.loads(receive(self.socket))
-            message = ClientMessage(buffer["code"], buffer["from"], buffer["data"])
-            self.server_broadcast_queue.put(message)
+            msg_lenght = struct.unpack("<I", self.socket.recv(HEADER_SIZE))[0]
+            msg_hash = self.socket.recv(HASH_SIZE)
+            msg_buffer = self.socket.recv(msg_lenght)
+            msg_dict = json.loads(msg_buffer)
+            new_hash = hashlib.sha256(msg_buffer, usedforsecurity=True).digest()
+            if msg_hash == new_hash:
+                message = ClientMessage(msg_dict["code"], msg_dict["from"], msg_dict["data"])
+                self.server_broadcast_queue.put(message)
+            else:
+                print("[CLIENT] Message integrity check: failed.")
     
     def handle_send(self, data: bytes):
         message = ClientMessage(Command.SEND, self.nickname, data.decode())

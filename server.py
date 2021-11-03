@@ -33,19 +33,25 @@ class Server:
         self.client_id_ctrl_set.add(rand)
         return rand
 
-    def broadcast(self, message: ClientMessage):
+    def broadcast(self, message: bytes):
         for client in self.clients:
-            self.clients[client].socket.sendall(message.pack())
+            self.clients[client].socket.sendall(message)
                 
 
     def handle_client(self, client: ClientEntry):
         client.active.set()
         while client.active.is_set():
-            buffer = json.loads(receive(client.socket))
-            message = ClientMessage(buffer["code"], buffer["from"], buffer["data"])
-            # print(f"[SERVER] (Command: {message['code']}) {client.nickname}: {message['data']}")
-            print(f"[SERVER] (Command: {message.code}) {message._from} (ID: {client.ID}): {message.data}")
-            self.broadcast(message)
+            msg_lenght = struct.unpack("<I", client.socket.recv(HEADER_SIZE))[0]
+            msg_hash = client.socket.recv(HASH_SIZE)
+            msg_buffer = client.socket.recv(msg_lenght)
+            msg_dict = json.loads(msg_buffer)
+            new_hash = hashlib.sha256(msg_buffer, usedforsecurity=True).digest()
+            if msg_hash == new_hash:
+                message = ClientMessage(msg_dict["code"], msg_dict["from"], msg_dict["data"])
+                print(f"[SERVER] (Command: {message.code}) {message._from} (ID: {client.ID}): {message.data}")
+                self.broadcast(message.pack())
+            else:
+                print("[SERVER] Message integrity check: failed.")
     
     def handle_connections(self):
         DEBUG = 1

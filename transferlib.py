@@ -7,6 +7,7 @@ import queue
 import threading
 import json
 import pickle
+import hashlib
 from constants import *
 
 
@@ -28,7 +29,8 @@ class ClientMessage:
             'data': self.data
         }).encode()
         header = struct.pack("<I", len(serialized))
-        return header + serialized
+        hash = hashlib.sha256(serialized, usedforsecurity=True).digest()
+        return header + hash + serialized
 
 
 
