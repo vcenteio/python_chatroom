@@ -41,17 +41,13 @@ class Server:
     def handle_client(self, client: ClientEntry):
         client.active.set()
         while client.active.is_set():
-            msg_lenght = struct.unpack("<I", client.socket.recv(HEADER_SIZE))[0]
-            msg_hash = client.socket.recv(HASH_SIZE)
-            msg_buffer = client.socket.recv(msg_lenght)
-            msg_dict = json.loads(msg_buffer)
-            new_hash = hashlib.sha256(msg_buffer, usedforsecurity=True).digest()
-            if msg_hash == new_hash:
-                message = ClientMessage(msg_dict["code"], msg_dict["from"], msg_dict["data"])
-                print(f"[SERVER] (Command: {message.code}) {message._from} (ID: {client.ID}): {message.data}")
-                self.broadcast(message.pack())
+            buffer = receive(client.socket)
+            message = ClientMessage.unpack(buffer)
+            if message.code == Command.ERROR:
+                print(message)
             else:
-                print("[SERVER] Message integrity check: failed.")
+                self.broadcast(message.pack())
+                print(f"[SERVER] (Command: {message.code}) {message._from} (ID: {client.ID}): {message.data}")
     
     def handle_connections(self):
         DEBUG = 1

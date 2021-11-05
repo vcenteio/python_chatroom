@@ -28,11 +28,23 @@ class ClientMessage:
             'from': self._from,
             'data': self.data
         }).encode()
-        header = struct.pack("<I", len(serialized))
+        header = struct.pack("<I", HASH_SIZE + len(serialized))
         hash = hashlib.sha256(serialized, usedforsecurity=True).digest()
         return header + hash + serialized
 
+    @staticmethod
+    def unpack(buffer: bytes):
+        msg_hash = buffer[:HASH_SIZE] 
+        msg_buffer = buffer[HASH_SIZE:] 
+        new_hash = hashlib.sha256(msg_buffer, usedforsecurity=True).digest()
+        if msg_hash == new_hash:
+            msg_dict = json.loads(msg_buffer)
+            return ClientMessage(msg_dict["code"], msg_dict["from"], msg_dict["data"])
+        else:
+            return ClientMessage(Command.ERROR, "_server", "[SERVER] Integrity check failed.")
 
+    def __str__(self) -> str:
+        return self.data
 
 def send(socket: socket.socket, data: bytes):
     header = struct.pack("<I", len(data))
