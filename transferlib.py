@@ -66,7 +66,6 @@ class NetworkAgent:
         header = struct.pack(HEADER_FORMAT, len(data))
         socket.sendall(header + data)
 
-
     @staticmethod
     def receive(socket: socket.socket) -> bytes:
         """
@@ -74,18 +73,6 @@ class NetworkAgent:
         """
         msg_lenght = struct.unpack(HEADER_FORMAT, socket.recv(HEADER_SIZE))[0]
         return socket.recv(msg_lenght)
-
-
-    # def encrypt(self, data: bytes, rsa_key: tuple) -> bytes:
-    #     return  Fernet(self.fernet_key).encrypt(
-    #                 base64.b64encode(self.rsa_encrypt_b(data, rsa_key))
-    #             )
-
-    # def decrypt(self, data: bytes, rsa_key: tuple) -> bytes:
-    #     return  self.rsa_decrypt_b(
-    #                 base64.b64decode(Fernet(self.fernet_key).decrypt(data)),
-    #                 rsa_key
-    #             )
 
     def encrypt(self, data: bytes) -> bytes:
         return Fernet(self.fernet_key).encrypt(base64.urlsafe_b64encode(data))
