@@ -52,15 +52,13 @@ class Server(NetworkAgent):
         for client_ID in self.clients:
             self.send(
                 self.clients[client_ID].socket,
-                self.encrypt(message, self.clients[client_ID].public_key)
+                self.encrypt(message)
             )
 
     def handle_client(self, client: ClientEntry):
         client.active.set()
         while client.active.is_set():
-            buffer = self.decrypt(self.receive(client.socket),
-            self.private_key
-            )
+            buffer = self.decrypt(self.receive(client.socket))
             message = ClientMessage.unpack(buffer, self.hmac_key)
             if message.code == Command.ERROR:
                 print(message)
@@ -125,7 +123,7 @@ class Server(NetworkAgent):
             self.send(
                 client_socket,
                 self.encrypt(
-                    struct.pack("<I", new_client.ID), new_client.public_key
+                    struct.pack("<I", new_client.ID)
                 )
             )
 
