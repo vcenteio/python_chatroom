@@ -11,5 +11,5 @@ BYTES_SEPARATOR = b"$_-_$"
 F_KEY = bytes()
 
 #for local testing
-server_IP = socket.gethostbyname(socket.gethostname())
-server_Port = 5050
+SERVER_IP = socket.gethostbyname(socket.gethostname())
+SERVER_PORT = 5050

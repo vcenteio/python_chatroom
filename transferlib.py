@@ -26,20 +26,20 @@ class ClientMessage:
         self.data = data
         self.time = time.asctime()
 
-    def pack(self):
+    def pack(self, hmac_key: bytes):
         serialized = json.dumps({
             'code': self.code,
             'from': self._from,
             'data': self.data
         }).encode()
-        hash = hashlib.sha256(serialized, usedforsecurity=True).digest()
-        return hash + serialized
+        msg_hash = hmac.new(hmac_key, serialized, hashlib.sha256).digest()
+        return msg_hash + serialized
 
     @staticmethod
-    def unpack(buffer: bytes):
+    def unpack(buffer: bytes, hmac_key: bytes):
         msg_hash = buffer[:HASH_SIZE] 
         msg_buffer = buffer[HASH_SIZE:] 
-        new_hash = hashlib.sha256(msg_buffer, usedforsecurity=True).digest()
+        new_hash = hmac.new(hmac_key, msg_buffer, hashlib.sha256).digest()
         if msg_hash == new_hash:
             msg_dict = json.loads(msg_buffer)
             return ClientMessage(msg_dict["code"], msg_dict["from"], msg_dict["data"])
@@ -52,8 +52,11 @@ class ClientMessage:
 
 class NetworkAgent:
     def __init__(self):
+        self.address = tuple()
         self.running = threading.Event()
         self.public_key, self.private_key = self.generate_rsa_keys()
+        self.fernet_key = b""
+        self.hmac_key = b""
 
     @staticmethod
     def send(socket: socket.socket, data: bytes):
@@ -72,16 +75,17 @@ class NetworkAgent:
         msg_lenght = struct.unpack(HEADER_FORMAT, socket.recv(HEADER_SIZE))[0]
         return socket.recv(msg_lenght)
 
-    @staticmethod
-    def generate_fernet_key():
-        return Fernet.generate_key()
 
+    def encrypt(self, data: bytes, rsa_key: tuple) -> bytes:
+        return  Fernet(self.fernet_key).encrypt(
+                    base64.b64encode(self.rsa_encrypt_b(data, rsa_key))
+                )
 
-    def encrypt(self, data: bytes, f_key: bytes, rsa_key: tuple) -> bytes:
-        return Fernet(f_key).encrypt(base64.b64encode(self.rsa_encrypt_b(data, rsa_key)))
-
-    def decrypt(self, data: bytes, f_key: bytes, rsa_key: tuple) -> bytes:
-        return self.rsa_decrypt_b(base64.b64decode(Fernet(f_key).decrypt(data)), rsa_key)
+    def decrypt(self, data: bytes, rsa_key: tuple) -> bytes:
+        return  self.rsa_decrypt_b(
+                    base64.b64decode(Fernet(self.fernet_key).decrypt(data)),
+                    rsa_key
+                )
 
     @staticmethod
     def generate_rsa_keys():
