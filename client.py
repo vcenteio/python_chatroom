@@ -18,7 +18,7 @@ class Client(NetworkAgent):
             message = self.server_broadcast_queue.get()
             #for now just print
             print(
-                f"[SERVER BROADCAST] (Command: {message.code})" +
+                f"[SERVER BROADCAST] (Command: {message.code})",
                 f"{message._from}: {message.data}"
             )
 
