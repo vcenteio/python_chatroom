@@ -48,12 +48,14 @@ class Server(NetworkAgent):
         self.client_id_ctrl_set.add(rand)
         return rand
 
-    def broadcast(self, message: bytes):
-        for client_ID in self.clients:
-            self.send(
-                self.clients[client_ID].socket,
-                self.encrypt(message)
-            )
+    def broadcast(self):
+        while self.running.is_set():
+            message = self.broadcast_q.get()
+            for client_ID in self.clients:
+                self.send(
+                    self.clients[client_ID].socket,
+                    self.encrypt(message)
+                )
 
     def handle_client(self, client: ClientEntry):
         client.active.set()
@@ -62,11 +64,11 @@ class Server(NetworkAgent):
             message = ClientMessage.unpack(buffer, self.hmac_key)
             if message.code == Command.ERROR:
                 print(message)
-                self.broadcast(message.pack(self.hmac_key))
+                self.broadcast_q.put(message.pack(self.hmac_key))
             else:
-                self.broadcast(message.pack(self.hmac_key))
+                self.broadcast_q.put(message.pack(self.hmac_key))
                 print(
-                    f"[SERVER] (Command: {message.code})" +
+                    f"[SERVER] (Command: {message.code})",
                     f"{message._from} (ID: {client.ID}): {message.data}"
                 )
     
@@ -144,6 +146,7 @@ class Server(NetworkAgent):
         self.socket.bind(self.address)
         self.socket.listen()
         self.running.set()
+        threading.Thread(target=self.broadcast, daemon=True).start()
         threading.Thread(target=self.handle_connections(), daemon=True).start()
 
 
