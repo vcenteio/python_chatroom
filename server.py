@@ -68,7 +68,8 @@ class Server(NetworkAgent):
             else:
                 self.broadcast_q.put(message.pack(self.hmac_key))
                 print(
-                    f"[SERVER] (Command: {message.code})",
+                    f"[SERVER] (Command: {message.code}",
+                    f"ID: {message.id})",
                     f"{message._from} (ID: {client.ID}): {message.data}"
                 )
     

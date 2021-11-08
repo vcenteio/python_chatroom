@@ -18,7 +18,8 @@ class Client(NetworkAgent):
             message = self.server_broadcast_queue.get()
             #for now just print
             print(
-                f"[SERVER BROADCAST] (Command: {message.code})",
+                f"[SERVER BROADCAST] (Command: {message.code}",
+                f"ID: {message.id})",
                 f"{message._from}: {message.data}"
             )
 
@@ -89,6 +90,7 @@ class Client(NetworkAgent):
                             self.receive(self.socket)
                         )
                     )[0]
+        ClientMessage.CLIENT_ID = self.ID
         if DEBUG: print("[CLIENT] My ID:", self.ID)
 
         threading.Thread(target=self.write_to_chatbox, daemon=True).start()

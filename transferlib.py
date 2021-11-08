@@ -20,17 +20,30 @@ class Command:
 
 class ClientMessage:
 
-    def __init__(self, code: int, _from: str, data=None):
+    id_count = 1
+    CLIENT_ID = int()
+
+    def __init__(self, code: int, _from: str, data=None, _id=None):
         self.code = code
         self._from = _from
         self.data = data
+        self.id = self.generate_id() if _id == None else _id
         self.time = time.asctime()
+    
+    @classmethod
+    def generate_id(cls):
+        if cls.id_count < 100000:
+            _id = f"#{cls.id_count:05}@{cls.CLIENT_ID}"
+            cls.id_count += 1
+            return _id
 
     def pack(self, hmac_key: bytes):
         serialized = json.dumps({
             'code': self.code,
             'from': self._from,
-            'data': self.data
+            'data': self.data,
+            'id': self.id,  
+            'time': self.time
         }).encode()
         msg_hash = hmac.new(hmac_key, serialized, hashlib.sha256).digest()
         return msg_hash + serialized
@@ -42,7 +55,7 @@ class ClientMessage:
         new_hash = hmac.new(hmac_key, msg_buffer, hashlib.sha256).digest()
         if msg_hash == new_hash:
             msg_dict = json.loads(msg_buffer)
-            return ClientMessage(msg_dict["code"], msg_dict["from"], msg_dict["data"])
+            return ClientMessage(msg_dict["code"], msg_dict["from"], msg_dict["data"], msg_dict["id"])
         else:
             return ClientMessage(Command.ERROR, "_server", "[SERVER] Integrity check failed.")
 
