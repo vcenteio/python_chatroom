@@ -1,5 +1,6 @@
-﻿from transferlib import *
+﻿from message import *
 from constants import *
+from network_agent import NetworkAgent
 import sys
 import os
 
