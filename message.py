@@ -15,36 +15,19 @@ from cryptography.fernet import Fernet
 from constants import *
 
 
-class Command:
-    SEND, DISCONNECT, ERROR, SUCCESS = range(4)
+class Message():
 
-class ClientMessage:
-
-    id_count = 1
     CLIENT_ID = int()
 
-    def __init__(self, code: int, _from: str, data=None, _id=None):
-        self.code = code
+    def __init__(self, _code: int, _from: str, _data=None, _time=None):
+        self._code = _code
         self._from = _from
-        self.data = data
-        self.id = self.generate_id() if _id == None else _id
-        self.time = time.asctime()
+        self._data = _data
+        self._time = time.asctime() if _time == None else _time
     
-    @classmethod
-    def generate_id(cls):
-        if cls.id_count < 100000:
-            _id = f"#{cls.id_count:05}@{cls.CLIENT_ID}"
-            cls.id_count += 1
-            return _id
 
     def pack(self, hmac_key: bytes):
-        serialized = json.dumps({
-            'code': self.code,
-            'from': self._from,
-            'data': self.data,
-            'id': self.id,  
-            'time': self.time
-        }).encode()
+        serialized = json.dumps(self.__dict__).encode()
         msg_hash = hmac.new(hmac_key, serialized, hashlib.sha256).digest()
         return msg_hash + serialized
 
@@ -55,10 +38,46 @@ class ClientMessage:
         new_hash = hmac.new(hmac_key, msg_buffer, hashlib.sha256).digest()
         if msg_hash == new_hash:
             msg_dict = json.loads(msg_buffer)
-            return ClientMessage(msg_dict["code"], msg_dict["from"], msg_dict["data"], msg_dict["id"])
+            if msg_dict["_code"] in range(2,5):
+                return Command(**msg_dict)
+            else:
+                return Reply(**msg_dict)
         else:
-            return ClientMessage(Command.ERROR, "_server", "[SERVER] Integrity check failed.")
+            return False
 
     def __str__(self) -> str:
-        return self.data
+        return self._data
+    
+    def __repr__(self) -> str:
+        return self.__dict__
 
+
+class Command(Message):
+    BROADCAST, QUERY, DISCONNECT = 2, 3, 4
+    id_count = 1
+
+    def __init__(self, _code: int, _from: str, _data=None, _id=None, _time=None):
+        super().__init__(_code, _from, _data, _time)
+        self._id = self.generate_id() if _id == None else _id
+
+    @classmethod
+    def generate_id(cls):
+        if cls.id_count < 100000:
+            _id = f"#{cls.id_count:05}@{cls.CLIENT_ID}"
+            cls.id_count += 1
+            return _id
+
+class Reply(Message):
+    ERROR, SUCCESS = 0, 1
+    id_count = 1
+
+    def __init__(self, _code: int, _from: str, _data=None, _id=None, _time=None):
+        super().__init__(_code, _from, _data, _time)
+        self._id = self.generate_id() if _id == None else _id
+
+    @classmethod
+    def generate_id(cls):
+        if cls.id_count < 100000:
+            _id = f"#{cls.id_count:05}"
+            cls.id_count += 1
+            return _id

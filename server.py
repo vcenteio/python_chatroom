@@ -7,13 +7,9 @@ import os
 
 class ClientEntry:
     def __init__(
-        self,
-        socket: socket.socket,
-        address: tuple,
-        nickname: str,
-        color: str,
-        _id: int,
-        public_key: tuple
+            self, socket: socket.socket, address: tuple,
+            nickname: str, color: str, _id: int,
+            public_key: tuple
         ):
         self.socket = socket
         self.address = address
@@ -62,17 +58,17 @@ class Server(NetworkAgent):
         client.active.set()
         while client.active.is_set():
             buffer = self.decrypt(self.receive(client.socket))
-            message = ClientMessage.unpack(buffer, self.hmac_key)
-            if message.code == Command.ERROR:
-                print(message)
-                self.broadcast_q.put(message.pack(self.hmac_key))
-            else:
-                self.broadcast_q.put(message.pack(self.hmac_key))
-                print(
-                    f"[SERVER] (Command: {message.code}",
-                    f"ID: {message.id})",
-                    f"{message._from} (ID: {client.ID}): {message.data}"
-                )
+            message = Message.unpack(buffer, self.hmac_key)
+            if message:
+                if message._code == Reply.ERROR:
+                    print(message)
+                    self.broadcast_q.put(message.pack(self.hmac_key))
+                else:
+                    self.broadcast_q.put(message.pack(self.hmac_key))
+                    print(
+                        f"[SERVER] ID: {message._id})",
+                        f"{message._from} (ID: {client.ID}): {message._data}"
+                    )
     
     def handle_connections(self):
         DEBUG = 1

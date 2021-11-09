@@ -19,9 +19,8 @@ class Client(NetworkAgent):
             message = self.server_broadcast_queue.get()
             #for now just print
             print(
-                f"[SERVER BROADCAST] (Command: {message.code}",
-                f"ID: {message.id})",
-                f"{message._from}: {message.data}"
+                f"[SERVER] ID: {message._id})",
+                f"{message._from} (ID: {client.ID}): {message._data}"
             )
 
     def handle_receive(self):
@@ -29,14 +28,14 @@ class Client(NetworkAgent):
             buffer = self.decrypt(
                 self.receive(self.socket)
             )
-            message = ClientMessage.unpack(buffer, self.hmac_key)
-            if message.code == Command.ERROR:
+            message = Message.unpack(buffer, self.hmac_key)
+            if message._code == Reply.ERROR:
                 print(message)
             else:
                 self.server_broadcast_queue.put(message)
     
     def handle_send(self, data: bytes):
-        message = ClientMessage(Command.SEND, self.nickname, data.decode())
+        message = Command(Command.BROADCAST, self.nickname, data.decode())
         self.send(
             self.socket,
             self.encrypt(message.pack(self.hmac_key))
@@ -91,7 +90,7 @@ class Client(NetworkAgent):
                             self.receive(self.socket)
                         )
                     )[0]
-        ClientMessage.CLIENT_ID = self.ID
+        Message.CLIENT_ID = self.ID
         if DEBUG: print("[CLIENT] My ID:", self.ID)
 
         threading.Thread(target=self.write_to_chatbox, daemon=True).start()
