@@ -6,7 +6,6 @@ import socket
 import queue
 import threading
 import json
-import pickle
 import hashlib
 import base64
 import math
@@ -17,9 +16,10 @@ from constants import *
 
 class Message():
 
+    ERROR, SUCCESS, UNPACK_ERROR, BROADCAST, QUERY, DISCONNECT = range(6)
     CLIENT_ID = int()
 
-    def __init__(self, _code: int, _from: str, _data=None, _time=None):
+    def __init__(self, _code: int, _from: tuple, _data=None, _time=None):
         self._code = _code
         self._from = _from
         self._data = _data
@@ -38,10 +38,13 @@ class Message():
         new_hash = hmac.new(hmac_key, msg_buffer, hashlib.sha256).digest()
         if msg_hash == new_hash:
             msg_dict = json.loads(msg_buffer)
-            if msg_dict["_code"] in range(2,5):
+            if msg_dict["_type"] == Command.TYPE:
                 return Command(**msg_dict)
-            else:
+            elif msg_dict["_type"] == Reply.TYPE:
                 return Reply(**msg_dict)
+        # there is an error then
+            else:
+                return Reply.UNPACK_ERROR
         else:
             return False
 
@@ -53,12 +56,17 @@ class Message():
 
 
 class Command(Message):
-    BROADCAST, QUERY, DISCONNECT = 2, 3, 4
+    TYPE = "command"
     id_count = 1
 
-    def __init__(self, _code: int, _from: str, _data=None, _id=None, _time=None):
+    def __init__(
+        self, _code: int,
+        _from: tuple,
+        _data=None, _id=None, _time=None, _type=None
+        ):
         super().__init__(_code, _from, _data, _time)
         self._id = self.generate_id() if _id == None else _id
+        self._type = self.TYPE if _type == None else _type
 
     @classmethod
     def generate_id(cls):
@@ -67,13 +75,29 @@ class Command(Message):
             cls.id_count += 1
             return _id
 
+
 class Reply(Message):
-    ERROR, SUCCESS = 0, 1
+    _SUCCESSFULL_RECV, _FAILED_RECV ,_INTEGRITY_FAILURE, _UNKNOWN_MSG_TYPE = range(4)
+    TYPE = "reply"
     id_count = 1
 
-    def __init__(self, _code: int, _from: str, _data=None, _id=None, _time=None):
+    description = {
+        _SUCCESSFULL_RECV : "Message successfully received.",
+        _FAILED_RECV : "Message could not be received.",
+        _INTEGRITY_FAILURE : "Message did not pass integrity check.",
+        _UNKNOWN_MSG_TYPE : "Message type unknown."
+    }
+
+    def __init__(
+        self, _code: int,
+        _from: tuple, _to, _message_id: str,
+        _data=None, _id=None, _time=None, _type=None
+        ):
         super().__init__(_code, _from, _data, _time)
         self._id = self.generate_id() if _id == None else _id
+        self._to = _to
+        self._message_id = _message_id
+        self._type = self.TYPE if _type == None else _type
 
     @classmethod
     def generate_id(cls):

@@ -2,6 +2,10 @@
 import hashlib
 import struct
 
+SERVER_NAME = "SERVER"
+SERVER_ID = 1
+SYSTEM_NAME = "system"
+SYSTEM_ID = 2
 CODEC_FORMAT = "utf-8"
 HEADER_FORMAT = "<I"
 HEADER_SIZE =  struct.calcsize(HEADER_FORMAT)
