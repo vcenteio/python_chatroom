@@ -12,6 +12,7 @@ import math
 import hmac
 from cryptography.fernet import Fernet
 from constants import *
+from exceptions import *
 
 
 class Message():
@@ -42,11 +43,14 @@ class Message():
                 return Command(**msg_dict)
             elif msg_dict["_type"] == Reply.TYPE:
                 return Reply(**msg_dict)
-        # there is an error then
+            # there is an error then
             else:
-                return Reply.UNPACK_ERROR
+                raise UnknownMessageType(
+                        Reply.description[Reply._UNKNOWN_MSG_TYPE]
+                    )
+        # integrity check failed
         else:
-            return False
+            raise IntegrityCheckFailed
 
     def __str__(self) -> str:
         return self._data
@@ -77,7 +81,7 @@ class Command(Message):
 
 
 class Reply(Message):
-    _SUCCESSFULL_RECV, _FAILED_RECV ,_INTEGRITY_FAILURE, _UNKNOWN_MSG_TYPE = range(4)
+    _SUCCESSFULL_RECV, _FAILED_RECV ,_INTEGRITY_FAILURE, _UNKNOWN_MSG_TYPE, _MSG_UNPACK_ERROR = range(5)
     TYPE = "reply"
     id_count = 1
 
@@ -85,7 +89,8 @@ class Reply(Message):
         _SUCCESSFULL_RECV : "Message successfully received.",
         _FAILED_RECV : "Message could not be received.",
         _INTEGRITY_FAILURE : "Message did not pass integrity check.",
-        _UNKNOWN_MSG_TYPE : "Message type unknown."
+        _UNKNOWN_MSG_TYPE : "Message type unknown.",
+        _MSG_UNPACK_ERROR : "Error unpacking message."
     }
 
     def __init__(
