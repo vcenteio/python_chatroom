@@ -8,15 +8,14 @@ class Client(NetworkAgent):
         super().__init__()
         self.nickname = nickname
         self.color = color # hex nickname color
-        self.command_queue = queue.Queue(10)
-        self.reply_queue = queue.Queue(10)
-        self.server_broadcast_q = queue.Queue()
+        self.dispatch_q = queue.Queue()
+        self.chatbox_q = queue.Queue()
         self.ID = int() # determined by the server later
         self.server_public_key = tuple() # obtained later
 
     def write_to_chatbox(self):
         while self.running.is_set():
-            message = self.server_broadcast_q.get()
+            message = self.chatbox_q.get()
             #for now just print
             print(
                 f"[SERVER] ID: {message._id}",
@@ -30,21 +29,28 @@ class Client(NetworkAgent):
                 self.receive(self.socket)
             )
             message = Message.unpack(buffer, self.hmac_key)
-            if message._type == Reply.TYPE:
+            # if message._type == Reply.TYPE:
+            if isinstance(message, Reply):
                 print(f"[SERVER] {message}")
-            elif message._code == Command.BROADCAST:
-                self.server_broadcast_q.put(message)
+            elif isinstance(message, Command):
+                if message._code == Command.BROADCAST:
+                    self.chatbox_q.put(message)
     
-    def handle_send(self, data: bytes):
+    def dispatch(self):
+        while self.running.is_set():
+            message = self.dispatch_q.get()
+            self.send(
+                self.socket,
+                self.encrypt(message.pack(self.hmac_key))
+            )
+    
+    def handle_send(self, data: str):
         message = Command(
                     Command.BROADCAST,
                     (self.ID, self.nickname),
-                    data.decode(),
+                    data,
                 )
-        self.send(
-            self.socket,
-            self.encrypt(message.pack(self.hmac_key))
-        )
+        self.dispatch_q.put(message)
 
     def handle_connect(self, server_ip, server_port):
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -102,6 +108,7 @@ class Client(NetworkAgent):
         if DEBUG: print("[CLIENT] My ID:", self.ID)
 
         threading.Thread(target=self.write_to_chatbox, daemon=True).start()
+        threading.Thread(target=self.dispatch, daemon=True).start()
         threading.Thread(target=self.handle_receive, daemon=True).start()
 
 
@@ -114,4 +121,4 @@ if __name__ == "__main__":
     while True:
         time.sleep(0.3)
         msg = input("> ")
-        client.handle_send(msg.rstrip().encode())
+        client.handle_send(msg.rstrip())
