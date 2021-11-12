@@ -30,11 +30,26 @@ class NetworkAgent:
             data.append(buffer)
         return b"".join(data)
 
-    def encrypt(self, data: bytes) -> bytes:
-        return Fernet(self.fernet_key).encrypt(base64.urlsafe_b64encode(data))
+    def encrypt(self, data: bytes, key: tuple) -> bytes:
+        return  Fernet(self.fernet_key).encrypt(
+                    base64.urlsafe_b64encode(
+                        self.rsa_encrypt_b(
+                            base64.urlsafe_b64encode(data),
+                            key
+                        )
+                    )
+                )
 
-    def decrypt(self, data: bytes) -> bytes:
-        return base64.urlsafe_b64decode(Fernet(self.fernet_key).decrypt(data))
+    def decrypt(self, data: bytes, key: tuple) -> bytes:
+        # return base64.urlsafe_b64decode(Fernet(self.fernet_key).decrypt(data))
+        return  base64.urlsafe_b64decode(
+                    self.rsa_decrypt_b(
+                        base64.urlsafe_b64decode(
+                            Fernet(self.fernet_key).decrypt(data)
+                        ),
+                        key
+                    )
+                )
 
     @staticmethod
     def generate_rsa_keys():

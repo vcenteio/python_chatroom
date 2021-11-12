@@ -54,18 +54,27 @@ class Server(NetworkAgent):
                 for client_ID in self.clients:
                     self.send(
                         self.clients[client_ID].socket,
-                        self.encrypt(message.pack(self.hmac_key))
+                        self.encrypt(
+                            message.pack(self.hmac_key),
+                            self.clients[client_ID].public_key
+                        )
                     )
             elif message._type == Reply.TYPE:
                 self.send(
                     self.clients[message._to].socket,
-                    self.encrypt(message.pack(self.hmac_key))
+                    self.encrypt(
+                        message.pack(self.hmac_key),
+                        self.clients[client_ID].public_key
+                    )
                 )
 
     def handle_client(self, client: ClientEntry):
         client.active.set()
         while client.active.is_set():
-            buffer = self.decrypt(self.receive(client.socket))
+            buffer =    self.decrypt(
+                            self.receive(client.socket),
+                            self.private_key
+                        )
             try:
                 message = Message.unpack(buffer, self.hmac_key)
                 if isinstance(message, Message):
@@ -172,7 +181,8 @@ class Server(NetworkAgent):
             self.send(
                 client_socket,
                 self.encrypt(
-                    struct.pack("<I", new_client.ID)
+                    struct.pack("<I", new_client.ID),
+                    new_client.public_key
                 )
             )
 
