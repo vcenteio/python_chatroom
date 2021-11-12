@@ -22,7 +22,13 @@ class NetworkAgent:
         Receive header with the message lenght and use it to receive the message content.
         """
         msg_lenght = struct.unpack(HEADER_FORMAT, socket.recv(HEADER_SIZE))[0]
-        return socket.recv(msg_lenght)
+        data = []
+        count = 0
+        while count < msg_lenght:
+            buffer = socket.recv(RECV_BLOCK_SIZE)
+            count += len(buffer)
+            data.append(buffer)
+        return b"".join(data)
 
     def encrypt(self, data: bytes) -> bytes:
         return Fernet(self.fernet_key).encrypt(base64.urlsafe_b64encode(data))

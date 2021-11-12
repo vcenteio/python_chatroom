@@ -9,6 +9,7 @@ SYSTEM_ID = 2
 CODEC_FORMAT = "utf-8"
 HEADER_FORMAT = "<I"
 HEADER_SIZE =  struct.calcsize(HEADER_FORMAT)
+RECV_BLOCK_SIZE = 64
 HASH_SIZE = len(hashlib.sha256().digest())
 RSA_KEY = tuple()
 BYTES_SEPARATOR = b"$_-_$"
