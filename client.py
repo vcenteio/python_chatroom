@@ -22,6 +22,7 @@ class Client(NetworkAgent):
                 f"{message._from[1]} (ID: {message._from[0]}):",
                 f"{message._data}"
             )
+            self.chatbox_q.task_done()
 
     def dispatch(self):
         while self.running.is_set():
@@ -33,13 +34,18 @@ class Client(NetworkAgent):
                     self.server_public_key
                 )
             )
+            time.sleep(CLT_SEND_SLEEP_TIME)
+            self.dispatch_q.task_done()
 
     def handle_receive(self):
         while self.running.is_set():
-            buffer =    self.decrypt(
-                            self.receive(self.socket),
-                            self.private_key
-                        )
+            if self.can_receive_from(self.socket):
+                buffer =    self.decrypt(
+                                self.receive(self.socket),
+                                self.private_key
+                            )
+            else:
+                continue
             try:
                 message = Message.unpack(buffer, self.hmac_key)
                 if isinstance(message, Command):
@@ -78,6 +84,7 @@ class Client(NetworkAgent):
                             Reply.description[Reply._UNKNOWN_MSG_TYPE]
                         )
                 self.dispatch_q.put(reply)
+            time.sleep(CLT_RECV_SLEEP_TIME)
     
     def handle_input(self, data: str):
         message = Command(

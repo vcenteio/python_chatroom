@@ -51,12 +51,12 @@ class Server(NetworkAgent):
         while self.running.is_set():
             message = self.broadcast_q.get()
             if message._code == Command.BROADCAST:
-                for client_ID in self.clients:
+                for client in self.clients.values():
                     self.send(
-                        self.clients[client_ID].socket,
+                        client.socket,
                         self.encrypt(
                             message.pack(self.hmac_key),
-                            self.clients[client_ID].public_key
+                            client.public_key
                         )
                     )
             elif message._type == Reply.TYPE:
@@ -64,17 +64,22 @@ class Server(NetworkAgent):
                     self.clients[message._to].socket,
                     self.encrypt(
                         message.pack(self.hmac_key),
-                        self.clients[client_ID].public_key
+                        self.clients[message._to].public_key
                     )
                 )
+            time.sleep(SRV_SEND_SLEEP_TIME)
+            self.broadcast_q.task_done()
 
     def handle_client(self, client: ClientEntry):
         client.active.set()
         while client.active.is_set():
-            buffer =    self.decrypt(
-                            self.receive(client.socket),
-                            self.private_key
-                        )
+            if self.can_receive_from(client.socket):
+                buffer =    self.decrypt(
+                                self.receive(client.socket),
+                                self.private_key
+                            )
+            else:
+                continue
             try:
                 message = Message.unpack(buffer, self.hmac_key)
                 if isinstance(message, Message):
@@ -127,6 +132,7 @@ class Server(NetworkAgent):
                             Reply.description[Reply._UNKNOWN_MSG_TYPE]
                         )
                 self.broadcast_q.put(reply)
+            time.sleep(SRV_RECV_SLEEP_TIME)
     
     def handle_connections(self):
         DEBUG = 1

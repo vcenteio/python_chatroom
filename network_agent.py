@@ -13,7 +13,8 @@ class NetworkAgent:
         """
         Pack data with header containing message lenght and send it.
         """
-        header = struct.pack(HEADER_FORMAT, len(data))
+        n = len(data)
+        header = struct.pack(HEADER_FORMAT, n)
         socket.sendall(header + data)
 
     @staticmethod
@@ -144,3 +145,19 @@ class NetworkAgent:
             dec_l = (l_int ** d) % N
             decrypted_s.append(dec_l.to_bytes(1, "little"))
         return b"".join(decrypted_s)
+    
+    @staticmethod
+    def can_receive_from(socket: socket.socket) -> bool:
+        readable, _, _ = select.select([socket], [], [], 0.5)
+        if socket in readable:
+            return True
+        else:
+            return False
+    
+    @staticmethod
+    def can_send_to(socket: socket.socket) -> bool:
+        _, writeable, _ = select.select([], [socket], [], 0.5)
+        if socket in writeable:
+            return True
+        else:
+            return False

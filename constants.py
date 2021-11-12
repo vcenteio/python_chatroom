@@ -14,6 +14,10 @@ HASH_SIZE = len(hashlib.sha256().digest())
 RSA_KEY = tuple()
 BYTES_SEPARATOR = b"$_-_$"
 F_KEY = bytes()
+SRV_SEND_SLEEP_TIME = 0.5
+SRV_RECV_SLEEP_TIME = 0.1
+CLT_SEND_SLEEP_TIME = 0.5
+CLT_RECV_SLEEP_TIME = 0.1
 
 #for local testing
 SERVER_IP = socket.gethostbyname(socket.gethostname())
