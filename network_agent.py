@@ -1,7 +1,8 @@
 ﻿from message import *
 
-class NetworkAgent:
+class NetworkAgent(threading.Thread):
     def __init__(self):
+        super().__init__()
         self.address = tuple()
         self.running = threading.Event()
         self.public_key, self.private_key = self.generate_rsa_keys()
@@ -42,7 +43,6 @@ class NetworkAgent:
                 )
 
     def decrypt(self, data: bytes, key: tuple) -> bytes:
-        # return base64.urlsafe_b64decode(Fernet(self.fernet_key).decrypt(data))
         return  base64.urlsafe_b64decode(
                     self.rsa_decrypt_b(
                         base64.urlsafe_b64decode(

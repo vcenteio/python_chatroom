@@ -16,8 +16,9 @@ class ClientEntry:
         self.nickname = nickname
         self.color = color
         self.ID = _id
-        self.active = threading.Event()
         self.public_key = public_key
+        self.active = threading.Event()
+        self.thread_id = int()
         
     def __str__(self):
         return f"({self.nickname}, {self.address})"
@@ -26,12 +27,13 @@ class ClientEntry:
 class Server(NetworkAgent):
     def __init__(self):
         super().__init__()
+        self.name = SERVER_NAME
+        self._id = SERVER_ID
         self.clients = dict()
+        self.client_threads = dict() 
         self.broadcast_q = queue.Queue()
         self.lock = threading.Lock()
         self.client_id_ctrl_set = set()
-        self.name = SERVER_NAME
-        self._id = SERVER_ID
     
     def generate_fernet_key(self):
         self.fernet_key = Fernet.generate_key()
@@ -50,37 +52,37 @@ class Server(NetworkAgent):
     def broadcast(self):
         while self.running.is_set():
             message = self.broadcast_q.get()
-            if message._code == Command.BROADCAST:
-                for client in self.clients.values():
+            if isinstance(message, (Command, Reply)):
+                if message._code == Command.BROADCAST:
+                    for client in self.clients.values():
+                        self.send(
+                            client.socket,
+                            self.encrypt(
+                                message.pack(self.hmac_key),
+                                client.public_key
+                            )
+                        )
+                elif message._type == Reply.TYPE:
                     self.send(
-                        client.socket,
+                        self.clients[message._to].socket,
                         self.encrypt(
                             message.pack(self.hmac_key),
-                            client.public_key
+                            self.clients[message._to].public_key
                         )
                     )
-            elif message._type == Reply.TYPE:
-                self.send(
-                    self.clients[message._to].socket,
-                    self.encrypt(
-                        message.pack(self.hmac_key),
-                        self.clients[message._to].public_key
-                    )
-                )
-            time.sleep(SRV_SEND_SLEEP_TIME)
+                time.sleep(SRV_SEND_SLEEP_TIME)
             self.broadcast_q.task_done()
 
     def handle_client(self, client: ClientEntry):
-        client.active.set()
-        while client.active.is_set():
-            if self.can_receive_from(client.socket):
-                buffer =    self.decrypt(
-                                self.receive(client.socket),
-                                self.private_key
-                            )
-            else:
-                continue
+        while client.active.is_set() and self.running.is_set():
             try:
+                if self.can_receive_from(client.socket):
+                    buffer =    self.decrypt(
+                                    self.receive(client.socket),
+                                    self.private_key
+                                )
+                else:
+                    continue
                 message = Message.unpack(buffer, self.hmac_key)
                 if isinstance(message, Message):
                     #it's a message from the client
@@ -104,8 +106,15 @@ class Server(NetworkAgent):
                             #just print the message for now
                             print(message)
                         elif message._code == Command.DISCONNECT:
-                            #just print the message for now
-                            print(message)
+                            self.disconnect_client(client)
+                            print(
+                                f"[SERVER] ID: {message._id}",
+                                f"{message._from[1]} (ID: {message._from[0]}):",
+                                f"{message._data}"
+                            )
+                        elif message._code == Command.SHUTDOWN:
+                            print("[SERVER] Shutdown command received.")
+                            self.shutdown()
                     elif isinstance(message, Reply):
                         #just print the message for now
                         print(
@@ -132,7 +141,24 @@ class Server(NetworkAgent):
                             Reply.description[Reply._UNKNOWN_MSG_TYPE]
                         )
                 self.broadcast_q.put(reply)
+            except struct.error:
+                self.disconnect_client(client)
+            except ConnectionError:
+                self.disconnect_client(client)
+
+
             time.sleep(SRV_RECV_SLEEP_TIME)
+
+    def disconnect_client(self, client: ClientEntry):
+        client.active.clear()
+        try:
+            client.socket.shutdown(socket.SHUT_RDWR)
+            client.socket.close()
+        except OSError:
+            print("[SERVER] Socket already closed.")
+        self.clients.pop(client.ID)
+        self.client_threads.pop(str(client.ID))
+        print(f"[SERVER] Client {client.nickname} (ID: {client.ID}) disconnected.")
     
     def handle_connections(self):
         DEBUG = 1
@@ -142,7 +168,10 @@ class Server(NetworkAgent):
         if DEBUG: print(f"[SERVER] HMAC key: {self.hmac_key}")
 
         while self.running.is_set():
-            client_socket, client_address = self.socket.accept()
+            try:
+                client_socket, client_address = self.socket.accept()
+            except:
+                break
             print(f"New client connection: {client_address}")
 
             # send rsa public key to client
@@ -193,13 +222,20 @@ class Server(NetworkAgent):
             )
 
             self.clients.update({new_client.ID: new_client})
+            new_client.active.set()
             if DEBUG: print(self.clients)
 
-            threading.Thread(
+            new_client_thread = threading.Thread(
                 target=self.handle_client,
                 args=[new_client],
                 daemon=True
-            ).start()
+            )
+            new_client_thread.name = new_client.ID
+            self.client_threads.update({
+                new_client_thread.name: new_client_thread
+            })
+            new_client_thread.start()
+            if DEBUG: print(self.client_threads)
 
     def run(self):
         self.address = (SERVER_IP, SERVER_PORT)
@@ -209,11 +245,45 @@ class Server(NetworkAgent):
         self.socket.bind(self.address)
         self.socket.listen()
         self.running.set()
-        threading.Thread(target=self.broadcast, daemon=True).start()
-        threading.Thread(target=self.handle_connections(), daemon=True).start()
+        self.broadcast_thread = threading.Thread(target=self.broadcast, daemon=True)
+        self.broadcast_thread.start()
+        self.connections_thread = threading.Thread(target=self.handle_connections(), daemon=True)
+        self.connections_thread.start()
+    
+    def shutdown(self):
+        DEBUG = True
+        print("[SERVER] Server shutting down.")
+        time.sleep(3)
+        self.running.clear()
 
+        # terminate broadcast thread
+        self.broadcast_q.put(1) # put dummy object and make it call taskdone()
+        print("[SERVER] Waiting for broadcast_q to get empty.")
+        self.broadcast_q.join()
+        if not self.broadcast_thread.is_alive():
+            print("[SERVER] Broadcast thread terminated.")
 
+        # disconnect clients
+        clients = tuple(self.clients.values())
+        for client in clients:
+            self.disconnect_client(client)
+        if DEBUG: print(f"[SERVER] Active clients: {self.clients}")
+
+        # close server socket and terminate handle_connections thread
+        try:
+            self.socket.close()
+        except OSError:
+            if DEBUG: print("[SERVER] Server socket already closed.")
+        try: 
+            if not self.connections_thread.is_alive():
+                print("[SERVER] Connection handling thread terminated.")
+        except:
+            print("[SERVER] Connection handling thread terminated.")
+
+        
+        print("[SERVER] Shutdown process finished. Exiting.")
+        
 
 if __name__ == "__main__":
     server = Server()
-    threading.Thread(target=server.run(), daemon=True).start()
+    server.start()

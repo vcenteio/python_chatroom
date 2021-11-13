@@ -18,7 +18,7 @@ from exceptions import *
 
 class Message():
 
-    ERROR, SUCCESS, UNPACK_ERROR, BROADCAST, QUERY, DISCONNECT = range(6)
+    ERROR, SUCCESS, UNPACK_ERROR, BROADCAST, QUERY, DISCONNECT, SHUTDOWN = range(7)
     CLIENT_ID = int()
 
     def __init__(self, _code: int, _from: tuple, _data=None, _time=None):

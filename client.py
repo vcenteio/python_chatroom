@@ -27,26 +27,29 @@ class Client(NetworkAgent):
     def dispatch(self):
         while self.running.is_set():
             message = self.dispatch_q.get()
-            self.send(
-                self.socket,
-                self.encrypt(
-                    message.pack(self.hmac_key),
-                    self.server_public_key
+            try:
+                self.send(
+                    self.socket,
+                    self.encrypt(
+                        message.pack(self.hmac_key),
+                        self.server_public_key
+                    )
                 )
-            )
+            except OSError:
+                print("[OS ERROR]")
             time.sleep(CLT_SEND_SLEEP_TIME)
             self.dispatch_q.task_done()
 
     def handle_receive(self):
         while self.running.is_set():
-            if self.can_receive_from(self.socket):
-                buffer =    self.decrypt(
-                                self.receive(self.socket),
-                                self.private_key
-                            )
-            else:
-                continue
             try:
+                if self.can_receive_from(self.socket):
+                    buffer =    self.decrypt(
+                                    self.receive(self.socket),
+                                    self.private_key
+                                )
+                else:
+                    continue
                 message = Message.unpack(buffer, self.hmac_key)
                 if isinstance(message, Command):
                     if message._code == Command.BROADCAST:
@@ -84,24 +87,61 @@ class Client(NetworkAgent):
                             Reply.description[Reply._UNKNOWN_MSG_TYPE]
                         )
                 self.dispatch_q.put(reply)
+            except struct.error:
+                # client disconnect here
+                sys.exit()
+            except OSError:
+                sys.exit()
+            
             time.sleep(CLT_RECV_SLEEP_TIME)
     
     def handle_input(self, data: str):
-        message = Command(
-                    Command.BROADCAST,
-                    (self.ID, self.nickname),
-                    data,
-                )
-        self.dispatch_q.put(message)
+        if data == "c:shut":
+            message = Command(
+                        Command.SHUTDOWN,
+                        (self.ID, self.nickname),
+                        data,
+                    )
+            self.dispatch_q.put(message)
+            time.sleep(1)
+            self.running.clear()
+        elif data == "c:disc":
+            self.handle_disconnect()
+        else:
+            message = Command(
+                        Command.BROADCAST,
+                        (self.ID, self.nickname),
+                        data,
+                    )
+            self.dispatch_q.put(message)
 
     def handle_connect(self, server_ip, server_port):
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.address = self.socket.connect((server_ip, server_port))
+        
+    def handle_disconnect(self):
+        print("[CLIENT] Disconnecting.")
+        disconnect_cmd = Command(
+                    Command.DISCONNECT,
+                    (self.ID, self.nickname),
+                    "Disconnect me.",
+                )
+        self.dispatch_q.put(disconnect_cmd)
+        time.sleep(1)
+        self.running.clear()
+        try:
+            self.socket.shutdown(socket.SHUT_RDWR)
+            self.socket.close()
+        except OSError:
+            print("[CLIENT] Socket already closed.")
+        self.dispatch_q.join()
+        self.chatbox_q.join()
+        sys.exit()
     
     def run(self):
         DEBUG = 1
-        self.handle_connect(SERVER_IP, SERVER_PORT)
         self.running.set()
+        self.handle_connect(SERVER_IP, SERVER_PORT)
         if DEBUG: print("[CLIENT] My public key:", self.public_key)
 
         # receive server public key
@@ -150,18 +190,17 @@ class Client(NetworkAgent):
         Message.CLIENT_ID = self.ID
         if DEBUG: print("[CLIENT] My ID:", self.ID)
 
-        threading.Thread(target=self.write_to_chatbox, daemon=True).start()
-        threading.Thread(target=self.dispatch, daemon=True).start()
-        threading.Thread(target=self.handle_receive, daemon=True).start()
+        chatbox_thread = threading.Thread(target=self.write_to_chatbox, daemon=True).start()
+        dispatch_thread = threading.Thread(target=self.dispatch, daemon=True).start()
+        receive_thread = threading.Thread(target=self.handle_receive, daemon=True).start()
 
 
 #for test purposes
 if __name__ == "__main__":
     client = Client(input("Insert nickname: "), "blue")
-    
-    threading.Thread(target=client.run, daemon=True).start()
+    client.start()
 
-    while True:
+    while client.running.is_set():
         time.sleep(0.3)
         msg = input("> ")
         client.handle_input(msg.rstrip())
