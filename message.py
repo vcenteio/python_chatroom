@@ -14,11 +14,52 @@ import select
 from cryptography.fernet import Fernet
 from constants import *
 from exceptions import *
+from enum import Enum, IntEnum, auto, unique
+
+
+class MessageType(IntEnum):
+
+    def _generate_next_value_(name, start, count, last_values):
+        s = __class__.__subclasses__()
+        lv = []
+        for subclass in s:
+            lv = list(set(lv + [message.value for message in subclass]))
+        if lv:
+            start = lv[:].pop() + 1
+        return start + count 
+
+    def __str__(self):
+        return f"{self.__class__.__name__}.{self.name}: {self.value}"
+    
+@unique    
+class CommandType(MessageType):
+    BROADCAST = auto()
+    QUERY = auto()
+    DISCONNECT = auto()
+    SHUTDOWN = auto()
+
+
+@unique
+class ReplyType(MessageType):
+    SUCCESS = auto()
+    ERROR = auto()
+
+
+@unique
+class ErrorType(MessageType):
+    UNPACK_ERROR = auto()
+
+
+class ReplyDescription():
+    _SUCCESSFULL_RECV = "Message successfully received."
+    _FAILED_RECV = "Message could not be received."
+    _INTEGRITY_FAILURE = "Message did not pass integrity check."
+    _UNKNOWN_MSG_TYPE = "Message type unknown."
+    _MSG_UNPACK_ERROR = "Error unpacking message."
 
 
 class Message():
 
-    ERROR, SUCCESS, UNPACK_ERROR, BROADCAST, QUERY, DISCONNECT, SHUTDOWN = range(7)
     CLIENT_ID = int()
 
     def __init__(self, _code: int, _from: tuple, _data=None, _time=None):
@@ -26,7 +67,6 @@ class Message():
         self._from = _from
         self._data = _data
         self._time = time.asctime() if _time == None else _time
-    
 
     def pack(self, hmac_key: bytes):
         serialized = json.dumps(self.__dict__).encode()
@@ -82,17 +122,8 @@ class Command(Message):
 
 
 class Reply(Message):
-    _SUCCESSFULL_RECV, _FAILED_RECV ,_INTEGRITY_FAILURE, _UNKNOWN_MSG_TYPE, _MSG_UNPACK_ERROR = range(5)
     TYPE = "reply"
     id_count = 1
-
-    description = {
-        _SUCCESSFULL_RECV : "Message successfully received.",
-        _FAILED_RECV : "Message could not be received.",
-        _INTEGRITY_FAILURE : "Message did not pass integrity check.",
-        _UNKNOWN_MSG_TYPE : "Message type unknown.",
-        _MSG_UNPACK_ERROR : "Error unpacking message."
-    }
 
     def __init__(
         self, _code: int,

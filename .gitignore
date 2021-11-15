@@ -1,7 +1,5 @@
-﻿test.py
-__pycache__/
-encryptionlib.py
+﻿__pycache__/
+test*.py
+*.out
+*.log
 scheme.drawio
-input
-output
-decoutput

@@ -12,10 +12,9 @@ class NetworkAgent(threading.Thread):
     @staticmethod
     def send(socket: socket.socket, data: bytes):
         """
-        Pack data with header containing message lenght and send it.
+        Pack data with header containing message length and send it.
         """
-        n = len(data)
-        header = struct.pack(HEADER_FORMAT, n)
+        header = struct.pack(HEADER_FORMAT, len(data))
         socket.sendall(header + data)
 
     @staticmethod
@@ -23,10 +22,10 @@ class NetworkAgent(threading.Thread):
         """
         Receive header with the message lenght and use it to receive the message content.
         """
-        msg_lenght = struct.unpack(HEADER_FORMAT, socket.recv(HEADER_SIZE))[0]
+        msg_length = struct.unpack(HEADER_FORMAT, socket.recv(HEADER_SIZE))[0]
         data = []
         count = 0
-        while count < msg_lenght:
+        while count < msg_length:
             buffer = socket.recv(RECV_BLOCK_SIZE)
             count += len(buffer)
             data.append(buffer)
