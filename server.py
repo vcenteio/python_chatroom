@@ -52,26 +52,30 @@ class Server(NetworkAgent):
     def broadcast(self):
         while self.running.is_set():
             message = self.broadcast_q.get()
-            if isinstance(message, Message):
-                if message._code == CommandType.BROADCAST:
-                    for client in self.clients.values():
+            try:
+                if isinstance(message, Message):
+                    if message._code == CommandType.BROADCAST:
+                        for client in self.clients.values():
+                            self.send(
+                                client.socket,
+                                self.encrypt(
+                                    message.pack(self.hmac_key),
+                                    client.public_key
+                                )
+                            )
+                    elif isinstance(message, Reply):
                         self.send(
-                            client.socket,
+                            self.clients[message._to].socket,
                             self.encrypt(
                                 message.pack(self.hmac_key),
-                                client.public_key
+                                self.clients[message._to].public_key
                             )
                         )
-                elif isinstance(message, Reply):
-                    self.send(
-                        self.clients[message._to].socket,
-                        self.encrypt(
-                            message.pack(self.hmac_key),
-                            self.clients[message._to].public_key
-                        )
-                    )
-                time.sleep(SRV_SEND_SLEEP_TIME)
-            self.broadcast_q.task_done()
+                    time.sleep(SRV_SEND_SLEEP_TIME)
+            except ConnectionResetError:
+                print(f"[SERVER] ConnectionsResetError - Message id: {message._id}.")
+            finally:
+                self.broadcast_q.task_done()
 
     def handle_client(self, client: ClientEntry):
         while client.active.is_set() and self.running.is_set():
@@ -143,7 +147,10 @@ class Server(NetworkAgent):
                         )
                 self.broadcast_q.put(reply)
             except struct.error:
-                self.disconnect_client(client)
+                # self.disconnect_client(client)
+                pass
+            except OSError:
+                pass
             except ConnectionError:
                 self.disconnect_client(client)
 
@@ -158,7 +165,6 @@ class Server(NetworkAgent):
         except OSError:
             print("[SERVER] Socket already closed.")
         self.clients.pop(client.ID)
-        self.client_threads.pop(str(client.ID))
         print(f"[SERVER] Client {client.nickname} (ID: {client.ID}) disconnected.")
     
     def handle_connections(self):
@@ -228,8 +234,7 @@ class Server(NetworkAgent):
 
             new_client_thread = threading.Thread(
                 target=self.handle_client,
-                args=[new_client],
-                daemon=True
+                args=[new_client]
             )
             new_client_thread.name = new_client.ID
             self.client_threads.update({
@@ -246,9 +251,9 @@ class Server(NetworkAgent):
         self.socket.bind(self.address)
         self.socket.listen()
         self.running.set()
-        self.broadcast_thread = threading.Thread(target=self.broadcast, daemon=True)
+        self.broadcast_thread = threading.Thread(target=self.broadcast)
         self.broadcast_thread.start()
-        self.connections_thread = threading.Thread(target=self.handle_connections(), daemon=True)
+        self.connections_thread = threading.Thread(target=self.handle_connections)
         self.connections_thread.start()
     
     def shutdown(self):
@@ -257,18 +262,40 @@ class Server(NetworkAgent):
         time.sleep(3)
         self.running.clear()
 
-        # terminate broadcast thread
-        self.broadcast_q.put(1) # put dummy object and make it call taskdone()
-        print("[SERVER] Waiting for broadcast_q to get empty.")
-        self.broadcast_q.join()
-        if not self.broadcast_thread.is_alive():
-            print("[SERVER] Broadcast thread terminated.")
-
         # disconnect clients
         clients = tuple(self.clients.values())
         for client in clients:
             self.disconnect_client(client)
+            try:
+                self.client_threads[str(client.ID)].join()
+            except RuntimeError:
+                pass
+            self.client_threads.pop(str(client.ID))
         if DEBUG: print(f"[SERVER] Active clients: {self.clients}")
+        if DEBUG: print(f"[SERVER] Active client threads: {self.client_threads}")
+
+        # terminate broadcast thread
+        self.broadcast_q.put(1) # put dummy object and make it call taskdone()
+        print("[SERVER] Waiting for broadcast_q to get empty.")
+        if not self.broadcast_q.empty():
+            while True:
+                try:
+                    _ = self.broadcast_q.get_nowait()
+                    self.broadcast_q.task_done()
+                    print(_)
+                except queue.Empty:
+                    print("[SERVER] Broadcast_q empty.")
+                    break
+        print("[SERVER] Joining broadcast_q.")
+        self.broadcast_q.join()
+        if not self.broadcast_thread.is_alive():
+            print("[SERVER] Broadcast thread terminated.")
+        else:
+            try:
+                self.broadcast_q.join()
+            except RuntimeError:
+                pass
+            print("[SERVER] Broadcast thread terminated.")
 
         # close server socket and terminate handle_connections thread
         try:
@@ -278,6 +305,9 @@ class Server(NetworkAgent):
         try: 
             if not self.connections_thread.is_alive():
                 print("[SERVER] Connection handling thread terminated.")
+            else:
+                print("[SERVER] Waiting for the termination of connections thread.")
+                self.connections_thread.join()
         except:
             print("[SERVER] Connection handling thread terminated.")
 

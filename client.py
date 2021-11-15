@@ -17,30 +17,38 @@ class Client(NetworkAgent):
         while self.running.is_set():
             message = self.chatbox_q.get()
             #for now just print
-            print(
-                f"[SERVER] ID: {message._id}",
-                f"{message._from[1]} (ID: {message._from[0]}):",
-                f"{message._data}"
-            )
+            if isinstance(message, Message):
+                print(
+                    f"[SERVER] ID: {message._id}",
+                    f"{message._from[1]} (ID: {message._from[0]}):",
+                    f"{message._data}"
+                )
             self.chatbox_q.task_done()
 
     def dispatch(self):
         while self.running.is_set():
             message = self.dispatch_q.get()
-            try:
-                self.send(
-                    self.socket,
-                    self.encrypt(
-                        message.pack(self.hmac_key),
-                        self.server_public_key
+            if isinstance(message, Message):
+                try:
+                    self.send(
+                        self.socket,
+                        self.encrypt(
+                            message.pack(self.hmac_key),
+                            self.server_public_key
+                        )
                     )
-                )
-            except OSError:
-                print("[OS ERROR]")
-            time.sleep(CLT_SEND_SLEEP_TIME)
-            self.dispatch_q.task_done()
+                except OSError:
+                    print("[OS ERROR]")
+                finally:
+                    self.dispatch_q.task_done()
+                    time.sleep(CLT_SEND_SLEEP_TIME)
+                    continue
+            else:
+                self.dispatch_q.task_done()
+                time.sleep(CLT_SEND_SLEEP_TIME)
 
     def handle_receive(self):
+        errors_count = 0
         while self.running.is_set():
             try:
                 if self.can_receive_from(self.socket):
@@ -91,8 +99,14 @@ class Client(NetworkAgent):
             except struct.error:
                 # client disconnect here
                 print("[CLIENT] Struct error.")
+                errors_count += 1
+                if errors_count > 3:
+                    self.handle_disconnect()
             except OSError:
                 print("[CLIENT] OSError.")
+                errors_count += 1
+                if errors_count > 3:
+                    self.handle_disconnect()
             
             time.sleep(CLT_RECV_SLEEP_TIME)
     
@@ -104,8 +118,9 @@ class Client(NetworkAgent):
                         data,
                     )
             self.dispatch_q.put(message)
-            self.running.clear()
+            # self.running.clear()
             time.sleep(1)
+            self.handle_disconnect()
         elif data == "c:disc":
             self.handle_disconnect()
         else:
@@ -122,21 +137,47 @@ class Client(NetworkAgent):
         
     def handle_disconnect(self):
         print("[CLIENT] Disconnecting.")
+        self.running.clear()
         disconnect_cmd = Command(
                     CommandType.DISCONNECT,
                     (self.ID, self.nickname),
                     "Disconnect me.",
                 )
         self.dispatch_q.put(disconnect_cmd)
-        self.running.clear()
         time.sleep(0.5)
         try:
             self.socket.shutdown(socket.SHUT_RDWR)
             self.socket.close()
+            print("[CLIENT] Socket closed.")
         except OSError:
             print("[CLIENT] Socket already closed.")
-        self.dispatch_q.join()
-        self.chatbox_q.join()
+        if self.receive_thread.is_alive():
+            print("[CLIENT] Waiting for receive thread to terminate.")
+            try:
+                self.receive_thread.join()
+            except RuntimeError:
+                pass
+        print("[CLIENT] Receive thread terminated.")
+        # self.dispatch_q.join()
+        if self.dispatch_thread.is_alive():
+            self.dispatch_q.put(1)
+            print("[CLIENT] Waiting for dispatch thread to terminate.")
+            self.dispatch_q.join()
+            try:
+                self.dispatch_thread.join()
+            except RuntimeError:
+                pass
+        print("[CLIENT] Dispatch thread terminated.")
+        # self.chatbox_q.join()
+        if self.chatbox_thread.is_alive():
+            self.chatbox_q.put(1)
+            print("[CLIENT] Waiting for chatbox thread to terminate.")
+            self.chatbox_q.join()
+            try:
+                self.chatbox_thread.join()
+            except RuntimeError:
+                pass
+        print("[CLIENT] Chatbox thread terminated.")
         sys.exit()
     
     def run(self):
@@ -192,9 +233,12 @@ class Client(NetworkAgent):
         Message.CLIENT_ID = self.ID
         if DEBUG: print("[CLIENT] My ID:", self.ID)
 
-        chatbox_thread = threading.Thread(target=self.write_to_chatbox, daemon=True).start()
-        dispatch_thread = threading.Thread(target=self.dispatch, daemon=True).start()
-        receive_thread = threading.Thread(target=self.handle_receive, daemon=True).start()
+        self.chatbox_thread = threading.Thread(target=self.write_to_chatbox)
+        self.chatbox_thread.start()
+        self.dispatch_thread = threading.Thread(target=self.dispatch)
+        self.dispatch_thread.start()
+        self.receive_thread = threading.Thread(target=self.handle_receive)
+        self.receive_thread.start()
 
 
 #for test purposes
