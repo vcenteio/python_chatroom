@@ -1,5 +1,6 @@
 ﻿__pycache__/
+logs/
 test*.py
 *.out
 *.log
-scheme.drawio
+*.drawio

@@ -1,4 +1,6 @@
-﻿from message import *
+﻿from logging import handlers
+from message import *
+import logger
 
 class NetworkAgent(threading.Thread):
     def __init__(self):
@@ -8,6 +10,7 @@ class NetworkAgent(threading.Thread):
         self.public_key, self.private_key = self.generate_rsa_keys()
         self.fernet_key = b""
         self.hmac_key = b""
+        self.logging_q = queue.Queue(-1) # queue with infinite size for logging
 
     @staticmethod
     def send(socket: socket.socket, data: bytes):
@@ -20,7 +23,8 @@ class NetworkAgent(threading.Thread):
     @staticmethod
     def receive(socket: socket.socket) -> bytes:
         """
-        Receive header with the message lenght and use it to receive the message content.
+        Receive header with the message lenght
+        and use it to receive the message content.
         """
         msg_length = struct.unpack(HEADER_FORMAT, socket.recv(HEADER_SIZE))[0]
         data = []
@@ -147,9 +151,11 @@ class NetworkAgent(threading.Thread):
     
     @staticmethod
     def can_receive_from(socket: socket.socket) -> bool:
-        readable, _, _ = select.select([socket], [], [], 0.5)
+        readable, _, broken = select.select([socket], [], [socket], 0.5)
         if socket in readable:
             return True
+        elif socket in broken:
+            return None 
         else:
             return False
     
@@ -160,3 +166,15 @@ class NetworkAgent(threading.Thread):
             return True
         else:
             return False
+    
+    def setup_logger(self):
+        self.logger = logger.get_new_logger(self.name)
+        self.logger.addHandler(
+            handlers.QueueHandler(self.logging_q)
+        )
+        self.q_listener = handlers.QueueListener(
+            self.logging_q,
+            logger.get_stream_handler(),
+            logger.get_file_handler(self.name)
+        )
+    

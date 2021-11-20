@@ -83,7 +83,6 @@ class Client(NetworkAgent):
                             (self.ID, self.nickname),
                             client.ID,
                             "-",
-                            # Reply.description[Reply._INTEGRITY_FAILURE]
                             ReplyDescription._INTEGRITY_FAILURE
                         )
                 self.dispatch_q.put(reply)
@@ -97,7 +96,6 @@ class Client(NetworkAgent):
                         )
                 self.dispatch_q.put(reply)
             except struct.error:
-                # client disconnect here
                 print("[CLIENT] Struct error.")
                 errors_count += 1
                 if errors_count > 3:
@@ -118,7 +116,6 @@ class Client(NetworkAgent):
                         data,
                     )
             self.dispatch_q.put(message)
-            # self.running.clear()
             time.sleep(1)
             self.handle_disconnect()
         elif data == "c:disc":
@@ -158,7 +155,6 @@ class Client(NetworkAgent):
             except RuntimeError:
                 pass
         print("[CLIENT] Receive thread terminated.")
-        # self.dispatch_q.join()
         if self.dispatch_thread.is_alive():
             self.dispatch_q.put(1)
             print("[CLIENT] Waiting for dispatch thread to terminate.")
@@ -168,7 +164,6 @@ class Client(NetworkAgent):
             except RuntimeError:
                 pass
         print("[CLIENT] Dispatch thread terminated.")
-        # self.chatbox_q.join()
         if self.chatbox_thread.is_alive():
             self.chatbox_q.put(1)
             print("[CLIENT] Waiting for chatbox thread to terminate.")
@@ -183,8 +178,7 @@ class Client(NetworkAgent):
     def run(self):
         DEBUG = 1
         self.running.set()
-        # self.handle_connect(SERVER_IP, SERVER_PORT)
-        self.handle_connect("2.80.232.129", SERVER_PORT)
+        self.handle_connect(SERVER_IP, SERVER_PORT)
         if DEBUG: print("[CLIENT] My public key:", self.public_key)
 
         # receive server public key

@@ -1,6 +1,7 @@
 ﻿import socket
 import hashlib
 import struct
+import logging
 
 SERVER_NAME = "SERVER"
 SERVER_ID = 1
@@ -18,6 +19,8 @@ SRV_SEND_SLEEP_TIME = 0.5
 SRV_RECV_SLEEP_TIME = 0.1
 CLT_SEND_SLEEP_TIME = 0.5
 CLT_RECV_SLEEP_TIME = 0.1
+LOG_LEVEL = logging.DEBUG
+LOG_FILE_MODE = "w"
 
 #for local testing
 SERVER_IP = socket.gethostbyname(socket.gethostname())
