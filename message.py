@@ -38,24 +38,38 @@ class CommandType(MessageType):
     DISCONNECT = auto()
     SHUTDOWN = auto()
 
+    # _code_to_name = {
+    #     BROADCAST : "BROADCAST",
+    #     QUERY : "QUERY",
+    #     DISCONNECT : "DISCONNECT",
+    #     SHUTDOWN : "SHUTDOWN"
+    # }
 
 @unique
 class ReplyType(MessageType):
     SUCCESS = auto()
     ERROR = auto()
 
+    # _code_to_name = {
+    #     SUCCESS : "SUCCESS",
+    #     ERROR : "ERROR"
+    # }
 
 @unique
 class ErrorType(MessageType):
     UNPACK_ERROR = auto()
 
+    # _code_to_name = {
+    #     UNPACK_ERROR : "UNPACK_ERROR"
+    # }
+
 
 class ReplyDescription():
-    _SUCCESSFULL_RECV = "Message successfully received."
-    _FAILED_RECV = "Message could not be received."
-    _INTEGRITY_FAILURE = "Message did not pass integrity check."
-    _UNKNOWN_MSG_TYPE = "Message type unknown."
-    _MSG_UNPACK_ERROR = "Error unpacking message."
+    _SUCCESSFULL_RECV = "successfully received."
+    _FAILED_RECV = "could not be received."
+    _INTEGRITY_FAILURE = "did not pass integrity check."
+    _UNKNOWN_MSG_TYPE = "type unknown."
+    _MSG_UNPACK_ERROR = "error unpacking message."
 
 
 class Message():

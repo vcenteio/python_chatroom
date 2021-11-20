@@ -74,7 +74,8 @@ class Server(NetworkAgent):
                         )
                     time.sleep(SRV_SEND_SLEEP_TIME)
             except ConnectionResetError:
-                self.logger.exception(f"ConnectionResetError - Message ID: {message._id}.")
+                self.logger.info("Could not broadcast message.")
+                self.logger.debug(f"ConnectionResetError - Message ID: {message._id}.")
             finally:
                 self.broadcast_q.task_done()
 
@@ -170,14 +171,19 @@ class Server(NetworkAgent):
                             ReplyDescription._MSG_UNPACK_ERROR
                         )
                 self.broadcast_q.put(reply)
-            except OSError:
-                self.logger.error("OSError: Terminanting thread.")
+            except (OSError, ConnectionError) as e:
+                self.logger.error(
+                    f"Client ID with [{client.ID}] " +
+                    "unexpectedly disconnected."
+                )
+                self.logger.debug(f"{e}, client ID = [{client.ID}]")
+                self.logger.debug(f"Terminating thread [{client.ID}]")
                 client.active.clear()
                 break
-            except ConnectionError:
-                self.logger.error("Connection Error: Terminanting thread.")
-                client.active.clear()
-                break
+            # except ConnectionError:
+            #     self.logger.error("Connection Error: Terminanting thread.")
+            #     client.active.clear()
+            #     break
             finally:
                 time.sleep(SRV_RECV_SLEEP_TIME)
                 if not client.active.is_set():
@@ -199,37 +205,49 @@ class Server(NetworkAgent):
         self.logger.debug(f"HMAC key: {self.hmac_key}")
 
         while self.running.is_set():
+            self.logger.info("Waiting for connections...")
             try:
                 client_socket, client_address = self.socket.accept()
-            except:
-                break
+            except OSError as e:
+                if self.running.is_set():
+                    self.logger.info("Could not handle connection request.")
+                    self.logger.debug(f"Description: {e}")
+
             self.logger.debug(f"New client connection from {client_address}")
             self.logger.debug(
                 "Starting encryption keys exchange with new client."
             )
 
             # send rsa public key to client
+            self.logger.debug("Sending RSA public key to client.")
             self.send(
                 client_socket,
                 f"{self.public_key[0]}-{self.public_key[1]}".encode()
             )
+            self.logger.debug("RSA public key sent.")
 
             # receive client public key
+            self.logger.debug("Waiting for client's RSA public key.")
             buffer = self.receive(client_socket).decode().split("-")
             client_public_key = (int(buffer[0]), int(buffer[1]))
             self.logger.debug(f"Client public key: {client_public_key}")
 
             # encrypt fernet and HMAC keys with client's public key and sent them to client
+            self.logger.debug("Sending Fernet key.")
             self.send(
                 client_socket,
                 self.rsa_encrypt_b(self.fernet_key, client_public_key)
             )
+            self.logger.debug("Fernet key sent.")
+            self.logger.debug("Sending HMAC key.")
             self.send(
                 client_socket,
                 self.rsa_encrypt_b(self.hmac_key, client_public_key)
             )
+            self.logger.debug("HMAC key sent.")
 
             # receive nickname and color
+            self.logger.debug("Waiting for client's initial data.")
             initial_data = json.loads(
                 self.rsa_decrypt_b(
                     self.receive(client_socket), self.private_key

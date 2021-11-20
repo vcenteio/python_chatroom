@@ -12,21 +12,40 @@ class NetworkAgent(threading.Thread):
         self.hmac_key = b""
         self.logging_q = queue.Queue(-1) # queue with infinite size for logging
 
-    @staticmethod
-    def send(socket: socket.socket, data: bytes):
+    # @staticmethod
+    def send(self, socket: socket.socket, data: bytes):
         """
         Pack data with header containing message length and send it.
         """
-        header = struct.pack(HEADER_FORMAT, len(data))
-        socket.sendall(header + data)
+        try:
+            header = struct.pack(HEADER_FORMAT, len(data))
+        except struct.error as e:
+            if self.running.is_set():
+                self.logger.error("Could not pack header.")
+                self.logger.debug(f"Struct error. Description: {e}")
+                return
 
-    @staticmethod
-    def receive(socket: socket.socket) -> bytes:
+        try:
+            socket.sendall(header + data)
+        except OSError as e:
+            if self.running.is_set():
+                self.logger.error("Could not send data.")
+                self.logger.debug(f"OSError. Description: {e}")
+
+
+    # @staticmethod
+    def receive(self, socket: socket.socket) -> bytes:
         """
         Receive header with the message lenght
         and use it to receive the message content.
         """
-        msg_length = struct.unpack(HEADER_FORMAT, socket.recv(HEADER_SIZE))[0]
+        try:
+            msg_length = struct.unpack(HEADER_FORMAT, socket.recv(HEADER_SIZE))[0]
+        except struct.error as e:
+            if self.running.is_set():
+                self.logger.error("Could not unpack header.")
+                self.logger.debug(f"Struct error. Description: {e}")
+                return False
         data = []
         count = 0
         while count < msg_length:
@@ -177,4 +196,5 @@ class NetworkAgent(threading.Thread):
             logger.get_stream_handler(),
             logger.get_file_handler(self.name)
         )
+        self.q_listener.respect_handler_level = True
     

@@ -29,5 +29,6 @@ def get_file_handler(file_name: str, file_mode: str = LOG_FILE_MODE, formatter: 
                 f"logs/{file_name.lower()}.log",
                file_mode 
             )
+    file_handler.setLevel(LOG_LEVEL)
     file_handler.setFormatter(formatter)
     return file_handler
