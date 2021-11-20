@@ -12,7 +12,18 @@ class NetworkAgent(threading.Thread):
         self.hmac_key = b""
         self.logging_q = queue.Queue(-1) # queue with infinite size for logging
 
-    # @staticmethod
+    def setup_logger(self):
+        self.logger = logger.get_new_logger(self.name)
+        self.logger.addHandler(
+            handlers.QueueHandler(self.logging_q)
+        )
+        self.q_listener = handlers.QueueListener(
+            self.logging_q,
+            logger.get_stream_handler(),
+            logger.get_file_handler(self.name)
+        )
+        self.q_listener.respect_handler_level = True
+
     def send(self, socket: socket.socket, data: bytes):
         """
         Pack data with header containing message length and send it.
@@ -33,14 +44,15 @@ class NetworkAgent(threading.Thread):
                 self.logger.debug(f"OSError. Description: {e}")
 
 
-    # @staticmethod
     def receive(self, socket: socket.socket) -> bytes:
         """
         Receive header with the message lenght
         and use it to receive the message content.
         """
         try:
-            msg_length = struct.unpack(HEADER_FORMAT, socket.recv(HEADER_SIZE))[0]
+            msg_length = struct.unpack(
+                    HEADER_FORMAT, socket.recv(HEADER_SIZE)
+                )[0]
         except struct.error as e:
             if self.running.is_set():
                 self.logger.error("Could not unpack header.")
@@ -48,13 +60,28 @@ class NetworkAgent(threading.Thread):
                 return False
         data = []
         count = 0
-        while count < msg_length:
-            buffer = socket.recv(RECV_BLOCK_SIZE)
-            count += len(buffer)
-            data.append(buffer)
-        return b"".join(data)
+        try:
+            while count < msg_length:
+                buffer = socket.recv(RECV_BLOCK_SIZE)
+                count += len(buffer)
+                data.append(buffer)
+            return b"".join(data)
+        except OSError as e:
+            if self.running.is_set():
+                self.logger.error("Could not receive data.")
+                self.logger.debug(f"OSError. Description: {e}")
+                return False
+        
 
     def encrypt(self, data: bytes, key: tuple) -> bytes:
+        if data == False or data == None:
+            self.logger.debug("Got wrong data.")
+            raise InvalidDataForEncryption
+        
+        if not key:
+            self.logger.debug("Got invalid key.")
+            raise InvalidRSAKey
+
         return  Fernet(self.fernet_key).encrypt(
                     base64.urlsafe_b64encode(
                         self.rsa_encrypt_b(
@@ -65,6 +92,14 @@ class NetworkAgent(threading.Thread):
                 )
 
     def decrypt(self, data: bytes, key: tuple) -> bytes:
+        if data == False or data == None:
+            self.logger.debug("Got wrong data.")
+            raise InvalidDataForEncryption
+        
+        if not key:
+            self.logger.debug("Got invalid key.")
+            raise InvalidRSAKey
+
         return  base64.urlsafe_b64decode(
                     self.rsa_decrypt_b(
                         base64.urlsafe_b64decode(
@@ -186,15 +221,4 @@ class NetworkAgent(threading.Thread):
         else:
             return False
     
-    def setup_logger(self):
-        self.logger = logger.get_new_logger(self.name)
-        self.logger.addHandler(
-            handlers.QueueHandler(self.logging_q)
-        )
-        self.q_listener = handlers.QueueListener(
-            self.logging_q,
-            logger.get_stream_handler(),
-            logger.get_file_handler(self.name)
-        )
-        self.q_listener.respect_handler_level = True
     

@@ -6,7 +6,6 @@ from network_agent import NetworkAgent
 class Client(NetworkAgent):
     def __init__(self, nickname: str, color: str):
         super().__init__()
-        # self.name = self.__class__.__name__.upper() # thread's name
         self.nickname = nickname # client's nickname
         self.name = self.nickname # for test purposes
         self.color = color # hex nickname color
@@ -51,6 +50,9 @@ class Client(NetworkAgent):
                 except OSError as e:
                     self.logger.info("Could not send message.")
                     self.logger.debug(f"OS Error: {e}")
+                except (InvalidDataForEncryption, InvalidRSAKey) as e:
+                    self.logger.info("Could not send message.")
+                    self.logger.debug(e)
             
             self.dispatch_q.task_done()
             time.sleep(CLT_SEND_SLEEP_TIME)
@@ -139,6 +141,9 @@ class Client(NetworkAgent):
                 if os_errors_count > 3:
                     self.logger.error("Lost connection with the server.")
                     self.disconnect_q.put(1)
+            except (InvalidDataForEncryption, InvalidRSAKey) as e:
+                self.logger.info("Could not receive message.")
+                self.logger.debug(e)
             finally:
                 time.sleep(CLT_RECV_SLEEP_TIME)
     
@@ -169,10 +174,11 @@ class Client(NetworkAgent):
             self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.address = self.socket.connect((server_ip, server_port))
             self.logger.info("Connection with the server stabilished.")
+            return True
         except ConnectionRefusedError as e:
             self.logger.info("Could not stabilish connection with the server.")
             self.logger.debug(f"Description: {e}")
-            self.running.clear()
+            return False
         
     def handle_disconnect(self):
         self.logger.info("Disconnecting...")
@@ -183,7 +189,6 @@ class Client(NetworkAgent):
         disconnect_cmd = Command(
                     CommandType.DISCONNECT,
                     (self.ID, self.nickname),
-                    # "Disconnect me.",
                 )
         self.dispatch_q.put(disconnect_cmd)
         try:
@@ -254,7 +259,15 @@ class Client(NetworkAgent):
     def run(self):
         self.setup_logger()
         self.running.set()
-        self.handle_connect(SERVER_IP, SERVER_PORT)
+        connection_success = self.handle_connect(SERVER_IP, SERVER_PORT)
+        if not connection_success:
+            self.q_listener.start()
+            self.logger.info("Exiting...")
+            self.running.clear()
+            self.q_listener.stop()
+            time.sleep(0.2)
+            return
+
         self.logger.debug(f"My public key: {self.public_key}")
 
         # receive server public key
@@ -342,7 +355,7 @@ class Client(NetworkAgent):
 if __name__ == "__main__":
     client = Client(input("Insert nickname: "), "blue")
     client.start()
-    time.sleep(0.5)
+    time.sleep(1)
 
     while client.running.is_set():
         client.logger.debug("Waiting for input.")

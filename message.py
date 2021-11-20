@@ -38,30 +38,16 @@ class CommandType(MessageType):
     DISCONNECT = auto()
     SHUTDOWN = auto()
 
-    # _code_to_name = {
-    #     BROADCAST : "BROADCAST",
-    #     QUERY : "QUERY",
-    #     DISCONNECT : "DISCONNECT",
-    #     SHUTDOWN : "SHUTDOWN"
-    # }
 
 @unique
 class ReplyType(MessageType):
     SUCCESS = auto()
     ERROR = auto()
 
-    # _code_to_name = {
-    #     SUCCESS : "SUCCESS",
-    #     ERROR : "ERROR"
-    # }
 
 @unique
 class ErrorType(MessageType):
     UNPACK_ERROR = auto()
-
-    # _code_to_name = {
-    #     UNPACK_ERROR : "UNPACK_ERROR"
-    # }
 
 
 class ReplyDescription():
