@@ -55,23 +55,47 @@ class Server(NetworkAgent):
             message = self.broadcast_q.get()
             try:
                 if isinstance(message, Message):
+                    packed_message = message.pack(self.hmac_key)
                     if message._code == CommandType.BROADCAST:
                         for client in self.clients.values():
-                            self.send(
-                                client.socket,
-                                self.encrypt(
-                                    message.pack(self.hmac_key),
-                                    client.public_key
-                                )
+                            encrypted_message = self.encrypt(
+                                packed_message,
+                                client.public_key
                             )
+                            sent = self.send(client.socket, encrypted_message)
+                            if sent:
+                                self.logger.debug(" ".join([
+                                    f"Message with ID [{message._id}].",
+                                    "successfully sent",
+                                    f"to client with ID [{client.ID}]."
+                                ]))
+                            else:
+                                self.logger.debug(" ".join([
+                                    f"Message with ID [{message._id}].",
+                                    "could not be sent",
+                                    f"to client with ID [{client.ID}]."
+                                ]))
                     elif isinstance(message, Reply):
-                        self.send(
-                            self.clients[message._to].socket,
-                            self.encrypt(
-                                message.pack(self.hmac_key),
-                                self.clients[message._to].public_key
-                            )
+                        encrypted_message = self.encrypt(
+                            packed_message,
+                            self.clients[message._to].public_key
                         )
+                        sent = self.send(
+                            self.clients[message._to].socket,
+                            encrypted_message
+                            )
+                        if sent:
+                            self.logger.debug(" ".join([
+                                f"Reply with ID [{message._id}].",
+                                "successfully sent",
+                                f"to client with ID [{client.ID}]."
+                            ]))
+                        else:
+                            self.logger.debug(" ".join([
+                                f"Reply with ID [{message._id}].",
+                                "could not be sent",
+                                f"to client with ID [{client.ID}]."
+                            ]))
                     time.sleep(SRV_SEND_SLEEP_TIME)
             except ConnectionResetError:
                 self.logger.info("Could not broadcast message.")
@@ -85,14 +109,46 @@ class Server(NetworkAgent):
     def handle_client(self, client: ClientEntry):
         while client.active.is_set() and self.running.is_set():
             try:
+                # receive data only when the client socket is available
                 if self.can_receive_from(client.socket):
-                    buffer =    self.decrypt(
-                                    self.receive(client.socket),
-                                    self.private_key
-                                )
+                    buffer = self.receive(client.socket)
+                    if not buffer:
+                        self.logger.debug("Empty buffer.")
+                        continue
                 else:
                     continue
-                message = Message.unpack(buffer, self.hmac_key)
+
+                if buffer == ErrorType.UNPACK_ERROR:
+                    self.logger.error(
+                        f"Error unpacking message header from " +
+                        f"client with ID [{client.ID}]."
+                    )
+                    reply = Reply(
+                                ErrorType.UNPACK_ERROR,
+                                (SERVER_ID, self.name),
+                                client.ID,
+                                "-",
+                                ReplyDescription._MSG_UNPACK_ERROR
+                            )
+                    self.broadcast_q.put(reply)
+                    continue
+                
+                elif buffer == ErrorType.CONNECTION_LOST:
+                    self.logger.error(" ".join([
+                        f"Client with ID [{client.ID}]",
+                        "disconnected unexpectedly."
+                    ]))
+                    self.disconnect_client(client)
+                    continue
+                
+                else:
+                    decrypted_message = self.decrypt(
+                        buffer,
+                        self.private_key
+                    )
+
+                message = Message.unpack(decrypted_message, self.hmac_key)
+
                 if isinstance(message, Message):
                     #it's a message from the client
                     if isinstance(message, Command):
@@ -139,11 +195,11 @@ class Server(NetworkAgent):
             # it's an error generated by the unpack function
             except IntegrityCheckFailed:
                 self.logger.error(
-                    " ".join(
+                    " ".join([
                         ReplyDescription._INTEGRITY_FAILURE,
                         f"Client ID = [{client.ID}]",
                         f"Client nickname = [{client.nickname}]"
-                    )
+                    ])
                 )
                 reply = Reply(
                             ErrorType.UNPACK_ERROR,
@@ -165,38 +221,17 @@ class Server(NetworkAgent):
                             ReplyDescription._UNKNOWN_MSG_TYPE
                         )
                 self.broadcast_q.put(reply)
-            except struct.error:
-                self.logger.error(
-                    f"Error unpacking message header from " +
-                    f"client with ID [{client.ID}]."
-                )
-                reply = Reply(
-                            ErrorType.UNPACK_ERROR,
-                            (SERVER_ID, self.name),
-                            client.ID,
-                            "-",
-                            ReplyDescription._MSG_UNPACK_ERROR
-                        )
-                self.broadcast_q.put(reply)
-            except (OSError, ConnectionError) as e:
-                self.logger.error(
-                    f"Client ID with [{client.ID}] " +
-                    "unexpectedly disconnected."
-                )
-                self.logger.debug(f"{e}, client ID = [{client.ID}]")
-                self.logger.debug(f"Terminating thread [{client.ID}]")
-                client.active.clear()
-                break
             except (InvalidDataForEncryption, InvalidRSAKey) as e:
                 self.logger.info("Could not receive message.")
                 self.logger.debug(e)
             finally:
-                time.sleep(SRV_RECV_SLEEP_TIME)
                 if not client.active.is_set():
                     self.logger.debug(
                         f"Client active flag changed: set -> clear, " +
                         f"Client ID = [{client.ID}]"
                     )
+                else:
+                    time.sleep(SRV_RECV_SLEEP_TIME)
 
         self.logger.debug(
             f"Exiting handle client loop, " +

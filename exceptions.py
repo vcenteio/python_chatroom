@@ -11,7 +11,8 @@ class UnknownMessageType(MessageUnpackError):
         super().__init__(msg)
 
 class IntegrityCheckFailed(MessageUnpackError):
-    def __init__(self, msg=None):
+    def __init__(self):
+        msg = "HMAC integrity check failed."
         super().__init__(msg)
 
 

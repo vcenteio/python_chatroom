@@ -24,7 +24,7 @@ class NetworkAgent(threading.Thread):
         )
         self.q_listener.respect_handler_level = True
 
-    def send(self, socket: socket.socket, data: bytes):
+    def send(self, socket: socket.socket, data: bytes) -> bool:
         """
         Pack data with header containing message length and send it.
         """
@@ -34,7 +34,7 @@ class NetworkAgent(threading.Thread):
             if self.running.is_set():
                 self.logger.error("Could not pack header.")
                 self.logger.debug(f"Struct error. Description: {e}")
-                return
+            return False
 
         try:
             socket.sendall(header + data)
@@ -42,6 +42,9 @@ class NetworkAgent(threading.Thread):
             if self.running.is_set():
                 self.logger.error("Could not send data.")
                 self.logger.debug(f"OSError. Description: {e}")
+            return False
+
+        return True
 
 
     def receive(self, socket: socket.socket) -> bytes:
@@ -49,28 +52,33 @@ class NetworkAgent(threading.Thread):
         Receive header with the message lenght
         and use it to receive the message content.
         """
+        header = None
         try:
+            header = socket.recv(HEADER_SIZE)
             msg_length = struct.unpack(
-                    HEADER_FORMAT, socket.recv(HEADER_SIZE)
+                    HEADER_FORMAT, 
+                    header
                 )[0]
-        except struct.error as e:
-            if self.running.is_set():
-                self.logger.error("Could not unpack header.")
-                self.logger.debug(f"Struct error. Description: {e}")
-                return False
-        data = []
-        count = 0
-        try:
+            data = []
+            count = 0
             while count < msg_length:
                 buffer = socket.recv(RECV_BLOCK_SIZE)
                 count += len(buffer)
                 data.append(buffer)
             return b"".join(data)
-        except OSError as e:
+        except struct.error as e:
             if self.running.is_set():
-                self.logger.error("Could not receive data.")
+                self.logger.error("Could not unpack header.")
+                self.logger.debug(f"Struct error. Description: {e}")
+            return ErrorType.UNPACK_ERROR
+        except (OSError, ConnectionError) as e:
+            if self.running.is_set():
+                self.logger.error(" ".join([
+                    "Could not receive",
+                    "header." if not header else "data."
+                ]))
                 self.logger.debug(f"OSError. Description: {e}")
-                return False
+            return ErrorType.CONNECTION_LOST
         
 
     def encrypt(self, data: bytes, key: tuple) -> bytes:

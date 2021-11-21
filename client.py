@@ -34,41 +34,76 @@ class Client(NetworkAgent):
             message = self.dispatch_q.get()
             if isinstance(message, Message):
                 try:
-                    self.send(
-                        self.socket,
-                        self.encrypt(
-                            message.pack(self.hmac_key),
-                            self.server_public_key
+                    packed_message = message.pack(self.hmac_key)
+                    encrypted_message = self.encrypt(
+                        packed_message,
+                        self.server_public_key
                         )
-                    )
-                    self.logger.debug(
-                        f"Message sent. "\
-                        f"Class=[{message.__class__.__name__}] "\
-                        f"Type=[{message._code}] "\
-                        f"Content: {message._data}"
-                    )
-                except OSError as e:
-                    self.logger.info("Could not send message.")
-                    self.logger.debug(f"OS Error: {e}")
+                    sent = self.send(self.socket, encrypted_message)
+                    if sent:
+                        self.logger.debug(
+                            f"Message sent. "\
+                            f"Class=[{message.__class__.__name__}] "\
+                            f"Type=[{message._code}] "\
+                            f"Content: {message._data}"
+                        )
+                    else:
+                        self.logger.debug(" ".join([
+                            "Could not send message.",
+                            f"Message ID = [{message._id}]"
+                        ]))
                 except (InvalidDataForEncryption, InvalidRSAKey) as e:
                     self.logger.info("Could not send message.")
                     self.logger.debug(e)
-            
+                finally:
+                    time.sleep(CLT_SEND_SLEEP_TIME)
             self.dispatch_q.task_done()
-            time.sleep(CLT_SEND_SLEEP_TIME)
 
     def handle_receive(self):
         os_errors_count = 0
         while self.running.is_set():
             try:
                 if self.can_receive_from(self.socket):
-                    buffer =    self.decrypt(
-                                    self.receive(self.socket),
-                                    self.private_key
-                                )
+                    buffer = self.receive(self.socket)
+                    if not buffer:
+                        self.logger.debug("Empty buffer.")
+                        continue
                 else:
                     continue
-                message = Message.unpack(buffer, self.hmac_key)
+
+                if buffer == ErrorType.UNPACK_ERROR:
+                    self.logger.error("Could not receive message from server.")
+                    self.logger.debug("Unpack error.")
+                    reply = Reply(
+                                ErrorType.UNPACK_ERROR,
+                                (self.ID, self.nickname),
+                                SERVER_ID,
+                                "-",
+                                ReplyDescription._MSG_UNPACK_ERROR
+                            )
+                    self.dispatch_q.put(reply)
+                    continue
+
+                elif buffer == ErrorType.CONNECTION_LOST:
+                    self.logger.error(
+                                "Message "\
+                                f"{ReplyDescription._FAILED_RECV}"
+                            )
+                    self.logger.debug("OS Error. Socket connection broken.")
+                    os_errors_count += 1
+                    if os_errors_count > 3:
+                        self.logger.error("Lost connection with the server.")
+                        self.disconnect_q.put(1)
+                        time.sleep(0.05)
+                    continue
+                else:
+                    decrypted_message = self.decrypt(
+                        buffer,
+                        self.private_key
+                    )
+
+                message = Message.unpack(decrypted_message, self.hmac_key)
+
                 if isinstance(message, Command):
                     if message._code == CommandType.BROADCAST:
                         reply = Reply(
@@ -122,28 +157,11 @@ class Client(NetworkAgent):
                             ReplyDescription._UNKNOWN_MSG_TYPE
                         )
                 self.dispatch_q.put(reply)
-            except struct.error as e:
-                if self.running.is_set():
-                    self.logger.error(
-                            "Message "\
-                            f"{ReplyDescription._FAILED_RECV}"
-                        )
-                    self.logger.debug("Struct error. Could not unpack header.")
-                    self.logger.debug(f"Description: {e}")
-            except OSError as e:
-                self.logger.error(
-                            "Message "\
-                            f"{ReplyDescription._FAILED_RECV}"
-                        )
-                self.logger.debug("OS Error. Socket connection broken.")
-                self.logger.debug(f"Description: {e}")
-                os_errors_count += 1
-                if os_errors_count > 3:
-                    self.logger.error("Lost connection with the server.")
-                    self.disconnect_q.put(1)
             except (InvalidDataForEncryption, InvalidRSAKey) as e:
                 self.logger.info("Could not receive message.")
                 self.logger.debug(e)
+            except TypeError:
+                pass
             finally:
                 time.sleep(CLT_RECV_SLEEP_TIME)
     
