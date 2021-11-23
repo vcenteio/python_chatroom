@@ -30,6 +30,7 @@ class Client(NetworkAgent):
             self.chatbox_q.task_done()
 
     def dispatch(self):
+        os_errors_count = 0
         while self.running.is_set():
             message = self.dispatch_q.get()
             if isinstance(message, Message):
@@ -39,22 +40,35 @@ class Client(NetworkAgent):
                         packed_message,
                         self.server_public_key
                         )
-                    sent = self.send(self.socket, encrypted_message)
-                    if sent:
-                        self.logger.debug(
-                            f"Message sent. "\
-                            f"Class=[{message.__class__.__name__}] "\
-                            f"Type=[{message._code}] "\
-                            f"Content: {message._data}"
-                        )
-                    else:
+
+                    self.send(self.socket, encrypted_message)
+
+                    self.logger.debug(" ".join([
+                        SuccessDescription._SUCCESSFULL_SEND,
+                        f"Class=[{message.__class__.__name__}] ",
+                        f"Type=[{message._code}] ",
+                        f"Content: {message._data}"
+                    ]))
+                except (NullData, NonBytesData, SendError) as e:
                         self.logger.debug(" ".join([
-                            "Could not send message.",
+                            ErrorDescription._FAILED_TO_SEND,
                             f"Message ID = [{message._id}]"
                         ]))
                 except (InvalidDataForEncryption, InvalidRSAKey) as e:
-                    self.logger.info("Could not send message.")
+                    self.logger.error("Could not send message.")
                     self.logger.debug(e)
+                except CriticalTransferError as e:
+                    self.logger.error(ErrorDescription._FAILED_TO_SEND)
+                    self.logger.debug(e)
+                    os_errors_count += 1
+                    if os_errors_count > CRITICAL_ERRORS_MAX_NUMBER:
+                        self.logger.critical(
+                            ErrorDescription._LOST_CONNECTION_W_SRV
+                            )
+                        self.disconnect_q.put(1)
+                        time.sleep(0.05)
+                    continue
+
                 finally:
                     time.sleep(CLT_SEND_SLEEP_TIME)
             self.dispatch_q.task_done()
@@ -62,46 +76,39 @@ class Client(NetworkAgent):
     def handle_receive(self):
         os_errors_count = 0
         while self.running.is_set():
+
+            # receive data
             try:
-                if self.can_receive_from(self.socket):
-                    buffer = self.receive(self.socket)
-                    if not buffer:
-                        self.logger.debug("Empty buffer.")
-                        continue
-                else:
-                    continue
+                buffer = self.receive_buffer(self.socket)
+            
+            except ReceiveError as e:
+                self.logger.error(ErrorDescription._FAILED_RECV)
+                self.logger.debug(e)
+                reply = Reply(
+                    ReplyType.ERROR,
+                    (self.ID, self.nickname),
+                    SERVER_ID,
+                    "Unknown",
+                    ErrorDescription._FAILED_RECV
+                )
+                self.dispatch_q.put(reply)
+                continue
 
-                if buffer == ErrorType.UNPACK_ERROR:
-                    self.logger.error("Could not receive message from server.")
-                    self.logger.debug("Unpack error.")
-                    reply = Reply(
-                                ErrorType.UNPACK_ERROR,
-                                (self.ID, self.nickname),
-                                SERVER_ID,
-                                "-",
-                                ReplyDescription._MSG_UNPACK_ERROR
-                            )
-                    self.dispatch_q.put(reply)
-                    continue
+            except CriticalTransferError as e:
+                self.logger.error(ErrorDescription._FAILED_RECV)
+                self.logger.debug(e)
+                os_errors_count += 1
+                if os_errors_count > CRITICAL_ERRORS_MAX_NUMBER:
+                    self.logger.critical("Lost connection with the server.")
+                    self.disconnect_q.put(1)
+                    time.sleep(0.05)
+                continue
 
-                elif buffer == ErrorType.CONNECTION_LOST:
-                    self.logger.error(
-                                "Message "\
-                                f"{ReplyDescription._FAILED_RECV}"
-                            )
-                    self.logger.debug("OS Error. Socket connection broken.")
-                    os_errors_count += 1
-                    if os_errors_count > 3:
-                        self.logger.error("Lost connection with the server.")
-                        self.disconnect_q.put(1)
-                        time.sleep(0.05)
-                    continue
-                else:
-                    decrypted_message = self.decrypt(
-                        buffer,
-                        self.private_key
-                    )
-
+            try:
+                decrypted_message = self.decrypt(
+                    buffer,
+                    self.private_key
+                )
                 message = Message.unpack(decrypted_message, self.hmac_key)
 
                 if isinstance(message, Command):

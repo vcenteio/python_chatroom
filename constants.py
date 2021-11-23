@@ -21,6 +21,7 @@ CLT_SEND_SLEEP_TIME = 0.5
 CLT_RECV_SLEEP_TIME = 0.1
 LOG_LEVEL = logging.DEBUG
 LOG_FILE_MODE = "w"
+CRITICAL_ERRORS_MAX_NUMBER = 3
 
 #for local testing
 SERVER_IP = socket.gethostbyname(socket.gethostname())

@@ -1,4 +1,5 @@
 ﻿from logging import handlers
+from os import startfile
 from message import *
 import logger
 
@@ -28,37 +29,51 @@ class NetworkAgent(threading.Thread):
         """
         Pack data with header containing message length and send it.
         """
+        if not data:
+            raise NullData
+        
+        if not isinstance(data, bytes):
+            raise NonBytesData
+
         try:
             header = struct.pack(HEADER_FORMAT, len(data))
         except struct.error as e:
             if self.running.is_set():
-                self.logger.error("Could not pack header.")
+                self.logger.error(ErrorDescription._FAILED_HEADER)
                 self.logger.debug(f"Struct error. Description: {e}")
-            return False
+            raise SendError
 
         try:
             socket.sendall(header + data)
-        except OSError as e:
+        except (OSError, ConnectionError) as e:
             if self.running.is_set():
-                self.logger.error("Could not send data.")
+                self.logger.error(ErrorDescription._FAILED_TO_SEND)
                 self.logger.debug(f"OSError. Description: {e}")
-            return False
-
+            raise CriticalTransferError
+        
         return True
 
 
-    def receive(self, socket: socket.socket) -> bytes:
-        """
-        Receive header with the message lenght
-        and use it to receive the message content.
-        """
+    @staticmethod
+    def receive_message_lenght(socket: socket.socket) -> int:
         header = None
-        try:
-            header = socket.recv(HEADER_SIZE)
+        header = socket.recv(HEADER_SIZE)
+        if header:
             msg_length = struct.unpack(
                     HEADER_FORMAT, 
                     header
                 )[0]
+        else:
+            raise EmptyHeader
+
+        if msg_length:
+            return msg_length
+        else:
+            raise NullMessageLength
+
+    @staticmethod    
+    def receive_message_data(socket: socket.socket, msg_length: int) -> bytes:
+        if msg_length:
             data = []
             count = 0
             while count < msg_length:
@@ -66,21 +81,57 @@ class NetworkAgent(threading.Thread):
                 count += len(buffer)
                 data.append(buffer)
             return b"".join(data)
+        else:
+            raise NullMessageLength
+
+    def receive(self, socket: socket.socket) -> bytes:
+        try:
+            msg_length = self.receive_message_lenght(socket)
+            message_data = self.receive_message_data(socket, msg_length)
+            return message_data
+        except (EmptyHeader, NullMessageLength) as e:
+            if self.running.is_set():
+                self.logger.error(ErrorDescription._FAILED_RECV)
+                self.logger.debug(e)
+            raise ReceiveError
         except struct.error as e:
             if self.running.is_set():
-                self.logger.error("Could not unpack header.")
+                self.logger.error(ErrorDescription._MSG_LENGTH_ERROR)
                 self.logger.debug(f"Struct error. Description: {e}")
-            return ErrorType.UNPACK_ERROR
+            raise ReceiveError
         except (OSError, ConnectionError) as e:
             if self.running.is_set():
-                self.logger.error(" ".join([
-                    "Could not receive",
-                    "header." if not header else "data."
-                ]))
+                self.logger.error(ErrorDescription._FAILED_RECV)
                 self.logger.debug(f"OSError. Description: {e}")
-            return ErrorType.CONNECTION_LOST
+            raise CriticalTransferError
         
+    @staticmethod
+    def can_receive_from(socket: socket.socket) -> bool:
+        readable, _, broken = select.select([socket], [], [socket], 0.5)
+        if socket in readable:
+            return True
+        elif socket in broken:
+            return None 
+        else:
+            return False
+    
+    @staticmethod
+    def can_send_to(socket: socket.socket) -> bool:
+        _, writeable, _ = select.select([], [socket], [], 0.5)
+        if socket in writeable:
+            return True
+        else:
+            return False
 
+    def receive_buffer(self, socket: socket.socket):
+        buffer = None
+        while not buffer:
+            if self.can_receive_from(socket):
+                buffer = self.receive(socket)
+        
+        return buffer
+
+    # encryption methods
     def encrypt(self, data: bytes, key: tuple) -> bytes:
         if data == False or data == None:
             self.logger.debug("Got wrong data.")
@@ -211,22 +262,5 @@ class NetworkAgent(threading.Thread):
             decrypted_s.append(dec_l.to_bytes(1, "little"))
         return b"".join(decrypted_s)
     
-    @staticmethod
-    def can_receive_from(socket: socket.socket) -> bool:
-        readable, _, broken = select.select([socket], [], [socket], 0.5)
-        if socket in readable:
-            return True
-        elif socket in broken:
-            return None 
-        else:
-            return False
-    
-    @staticmethod
-    def can_send_to(socket: socket.socket) -> bool:
-        _, writeable, _ = select.select([], [socket], [], 0.5)
-        if socket in writeable:
-            return True
-        else:
-            return False
     
     

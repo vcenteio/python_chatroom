@@ -48,16 +48,29 @@ class ReplyType(MessageType):
 @unique
 class ErrorType(MessageType):
     UNPACK_ERROR = auto()
+    RECEIVE_ERROR = auto()
     CONNECTION_LOST = auto()
 
 
 class ReplyDescription():
     _SUCCESSFULL_RECV = "successfully received"
-    _FAILED_RECV = "could not be received"
+    _FAILED_RECV = "Message could not be received."
     _INTEGRITY_FAILURE = "did not pass integrity check"
     _UNKNOWN_MSG_TYPE = "type unknown"
     _MSG_UNPACK_ERROR = "error unpacking message"
 
+class SuccessDescription():
+    _SUCCESSFULL_SEND = "Message sent successfully."
+
+class ErrorDescription():
+    _FAILED_RECV = "Message could not be received."
+    _FAILED_TO_SEND = "Message could not be sent."
+    _MSG_LENGTH_ERROR = "Failed to get message length."
+    _FAILED_HEADER = "Failed to prepare header for data."
+    _LOST_CONNECTION_W_SRV = "Lost connection with the server."
+    _INTEGRITY_FAILURE = "did not pass integrity check"
+    _UNKNOWN_MSG_TYPE = "type unknown"
+    _MSG_UNPACK_ERROR = "error unpacking message"
 
 class Message():
 

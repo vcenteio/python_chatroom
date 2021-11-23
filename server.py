@@ -97,12 +97,21 @@ class Server(NetworkAgent):
                                 f"to client with ID [{client.ID}]."
                             ]))
                     time.sleep(SRV_SEND_SLEEP_TIME)
-            except ConnectionResetError:
-                self.logger.info("Could not broadcast message.")
-                self.logger.debug(f"ConnectionResetError - Message ID: {message._id}.")
-            except (InvalidDataForEncryption, InvalidRSAKey) as e:
-                self.logger.info("Could not broadcast message.")
+            except (
+                InvalidDataForEncryption,
+                InvalidRSAKey,
+                NullData,
+                NonBytesData,
+                SendError
+                ) as e:
+                self.logger.error(ErrorDescription._FAILED_TO_SEND)
                 self.logger.debug(e)
+            except CriticalTransferError as e:
+                self.logger.error(" ".join([
+                    f"Client with ID [{client.ID}]",
+                    "disconnected unexpectedly."
+                ]))
+                self.disconnect_client(client)
             finally:
                 self.broadcast_q.task_done()
 
@@ -110,42 +119,35 @@ class Server(NetworkAgent):
         while client.active.is_set() and self.running.is_set():
             try:
                 # receive data only when the client socket is available
-                if self.can_receive_from(client.socket):
-                    buffer = self.receive(client.socket)
-                    if not buffer:
-                        self.logger.debug("Empty buffer.")
-                        continue
-                else:
-                    continue
+                buffer = self.receive_buffer(client.socket)
 
-                if buffer == ErrorType.UNPACK_ERROR:
-                    self.logger.error(
-                        f"Error unpacking message header from " +
-                        f"client with ID [{client.ID}]."
-                    )
-                    reply = Reply(
-                                ErrorType.UNPACK_ERROR,
-                                (SERVER_ID, self.name),
-                                client.ID,
-                                "-",
-                                ReplyDescription._MSG_UNPACK_ERROR
-                            )
-                    self.broadcast_q.put(reply)
-                    continue
+            except ReceiveError as e:
+                self.logger.error(ErrorDescription._FAILED_RECV)
+                self.logger.debug(e)
+                reply = Reply(
+                    ReplyType.ERROR,
+                    (self._id, self.name),
+                    client.ID,
+                    "Unknown",
+                    ErrorDescription._FAILED_RECV
+                )
+                self.broadcast_q.put(reply)
+                continue
+
+            except CriticalTransferError as e:
+                self.logger.error(" ".join([
+                    f"Client with ID [{client.ID}]",
+                    "disconnected unexpectedly."
+                ]))
+                self.disconnect_client(client)
+                continue
+
+            try:
                 
-                elif buffer == ErrorType.CONNECTION_LOST:
-                    self.logger.error(" ".join([
-                        f"Client with ID [{client.ID}]",
-                        "disconnected unexpectedly."
-                    ]))
-                    self.disconnect_client(client)
-                    continue
-                
-                else:
-                    decrypted_message = self.decrypt(
-                        buffer,
-                        self.private_key
-                    )
+                decrypted_message = self.decrypt(
+                    buffer,
+                    self.private_key
+                )
 
                 message = Message.unpack(decrypted_message, self.hmac_key)
 
