@@ -1,5 +1,4 @@
 ﻿from logging import handlers
-from os import startfile
 from message import *
 import logger
 
@@ -56,7 +55,6 @@ class NetworkAgent(threading.Thread):
 
     @staticmethod
     def receive_message_lenght(socket: socket.socket) -> int:
-        header = None
         header = socket.recv(HEADER_SIZE)
         if header:
             msg_length = struct.unpack(
@@ -107,29 +105,19 @@ class NetworkAgent(threading.Thread):
         
     @staticmethod
     def can_receive_from(socket: socket.socket) -> bool:
-        readable, _, broken = select.select([socket], [], [socket], 0.5)
-        if socket in readable:
-            return True
-        elif socket in broken:
-            return None 
-        else:
-            return False
+        readable, _, _ = select.select([socket], [], [], 0.5)
+        return True if socket in readable else False
     
     @staticmethod
     def can_send_to(socket: socket.socket) -> bool:
         _, writeable, _ = select.select([], [socket], [], 0.5)
-        if socket in writeable:
-            return True
-        else:
-            return False
+        return True if socket in writeable else False
 
     def receive_buffer(self, socket: socket.socket):
-        buffer = None
-        while not buffer:
-            if self.can_receive_from(socket):
-                buffer = self.receive(socket)
-        
-        return buffer
+        while not self.can_receive_from(socket):
+            continue
+
+        return self.receive(socket) 
 
     # encryption methods
     def encrypt(self, data: bytes, key: tuple) -> bytes:

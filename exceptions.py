@@ -47,7 +47,7 @@ class NullData(ValueError):
 
 class NonBytesData(TypeError):
     def __init__(self, type):
-        self.msg = f"Wrong type for data argument ({type}). Should be bytes."
+        self.msg = f"Wrong type for data argument: ({type}). Should be bytes."
         super().__init__(self.msg)
 
 # unpacking errors

@@ -32,7 +32,9 @@ class Server(NetworkAgent):
         self._id = SERVER_ID
         self.clients = dict()
         self.client_threads = dict() 
+        self.dispatch_q = queue.Queue()
         self.broadcast_q = queue.Queue()
+        self.reply_q = queue.Queue()
         self.lock = threading.Lock()
         self.client_id_ctrl_set = set()
     
@@ -50,75 +52,89 @@ class Server(NetworkAgent):
         self.client_id_ctrl_set.add(rand)
         return rand
 
-    def broadcast(self):
+    def broadcast_enqueuer(self):
         while self.running.is_set():
             message = self.broadcast_q.get()
-            try:
-                if isinstance(message, Message):
+            if isinstance(message, Command):
+                try:
                     packed_message = message.pack(self.hmac_key)
-                    if message._code == CommandType.BROADCAST:
-                        for client in self.clients.values():
-                            encrypted_message = self.encrypt(
-                                packed_message,
-                                client.public_key
-                            )
-                            sent = self.send(client.socket, encrypted_message)
-                            if sent:
-                                self.logger.debug(" ".join([
-                                    f"Message with ID [{message._id}].",
-                                    "successfully sent",
-                                    f"to client with ID [{client.ID}]."
-                                ]))
-                            else:
-                                self.logger.debug(" ".join([
-                                    f"Message with ID [{message._id}].",
-                                    "could not be sent",
-                                    f"to client with ID [{client.ID}]."
-                                ]))
-                    elif isinstance(message, Reply):
+                    for client in self.clients.values():
                         encrypted_message = self.encrypt(
                             packed_message,
-                            self.clients[message._to].public_key
+                            client.public_key
                         )
-                        sent = self.send(
-                            self.clients[message._to].socket,
-                            encrypted_message
-                            )
-                        if sent:
-                            self.logger.debug(" ".join([
-                                f"Reply with ID [{message._id}].",
-                                "successfully sent",
-                                f"to client with ID [{client.ID}]."
-                            ]))
-                        else:
-                            self.logger.debug(" ".join([
-                                f"Reply with ID [{message._id}].",
-                                "could not be sent",
-                                f"to client with ID [{client.ID}]."
-                            ]))
-                    time.sleep(SRV_SEND_SLEEP_TIME)
-            except (
-                InvalidDataForEncryption,
-                InvalidRSAKey,
-                NullData,
-                NonBytesData,
-                SendError
-                ) as e:
-                self.logger.error(ErrorDescription._FAILED_TO_SEND)
+                        self.dispatch_q.put((
+                            encrypted_message,
+                            client 
+                        ))
+                except (
+                    InvalidDataForEncryption,
+                    InvalidRSAKey,
+                    NullData,
+                    NonBytesData
+                    ) as e:
+                    self.logger.error(" ".join([
+                        ErrorDescription._FAILED_TO_SEND,
+                        f"to client with ID [{client.ID}].",
+                        f"content = {message._data}"
+                    ]))
+                    self.logger.debug(e)
+            self.broadcast_q.task_done()
+    
+    def reply_enqueuer(self):
+        while self.running.is_set():
+            reply = self.reply_q.get()
+            client = self.clients[reply._to]
+            if isinstance(reply, Reply):
+                try:
+                    packed_reply = reply.pack(self.hmac_key)
+                    encrypted_reply = self.encrypt(
+                        packed_reply,
+                        client.public_key
+                    )
+                    self.dispatch_q.put((
+                        encrypted_reply,
+                        client
+                    ))
+                except (
+                    InvalidDataForEncryption,
+                    InvalidRSAKey,
+                    NullData,
+                    NonBytesData
+                    ) as e:
+                    self.logger.error(" ".join([
+                        ErrorDescription._FAILED_TO_SEND_REPLY,
+                        f"to client with ID [{client.ID}].",
+                        f"content = {reply._data}"
+                    ]))
+                    self.logger.debug(e)
+            self.reply_q.task_done()
+
+    def dispatch(self):
+        while self.running.is_set():
+            data, client = self.dispatch_q.get()
+            try:
+                self.send(client.socket, data)
+            except SendError as e:
+                self.logger.error(" ".join([
+                    ErrorDescription._FAILED_TO_SEND,
+                    f"to client with ID [{client.ID}]."
+                ]))
                 self.logger.debug(e)
             except CriticalTransferError as e:
                 self.logger.error(" ".join([
                     f"Client with ID [{client.ID}]",
                     "disconnected unexpectedly."
                 ]))
+                self.logger.debug(e)
                 self.disconnect_client(client)
             finally:
-                self.broadcast_q.task_done()
+                time.sleep(SRV_SEND_SLEEP_TIME)
+                self.dispatch_q.task_done()
 
     def handle_client(self, client: ClientEntry):
         while client.active.is_set() and self.running.is_set():
             try:
-                # receive data only when the client socket is available
                 buffer = self.receive_buffer(client.socket)
 
             except ReceiveError as e:
@@ -143,7 +159,6 @@ class Server(NetworkAgent):
                 continue
 
             try:
-                
                 decrypted_message = self.decrypt(
                     buffer,
                     self.private_key
@@ -163,7 +178,7 @@ class Server(NetworkAgent):
                                 ReplyDescription._SUCCESSFULL_RECV
                             )
                             self.broadcast_q.put(message)
-                            self.broadcast_q.put(reply)
+                            self.reply_q.put(reply)
                             self.logger.info(
                                 f"Broadcast command received from " +
                                 f"client with ID [{message._from[0]}], " +
@@ -357,8 +372,20 @@ class Server(NetworkAgent):
         self.socket.bind(self.address)
         self.socket.listen()
         self.running.set()
-        self.broadcast_thread = threading.Thread(target=self.broadcast)
-        self.broadcast_thread.start()
+        # self.broadcast_thread = threading.Thread(target=self.broadcast)
+        # self.broadcast_thread.start()
+        self.broadcast_enqueuer_thread = threading.Thread(
+            target=self.broadcast_enqueuer
+            )
+        self.broadcast_enqueuer_thread.start()
+        self.reply_enqueuer_thread = threading.Thread(
+            target=self.reply_enqueuer
+            )
+        self.reply_enqueuer_thread.start()
+        self.dispatch_thread = threading.Thread(
+            target=self.dispatch
+        )
+        self.dispatch_thread.start()
         self.connections_thread = threading.Thread(target=self.handle_connections)
         self.connections_thread.start()
 
@@ -384,7 +411,13 @@ class Server(NetworkAgent):
                     f"Client ID=[{client.ID}]"
                 ])
             )
-        self.clients.pop(client.ID)
+        try:
+            self.clients.pop(client.ID)
+        except KeyError as e:
+            self.logger.debug(
+                f"Key error while popping client from dict. "\
+                f"Description={e}"
+                )
         self.logger.info(
             f"Client with ID [{client.ID}] disconnected."
         )

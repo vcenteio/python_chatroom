@@ -64,7 +64,8 @@ class SuccessDescription():
 
 class ErrorDescription():
     _FAILED_RECV = "Message could not be received."
-    _FAILED_TO_SEND = "Message could not be sent."
+    _FAILED_TO_SEND = "Message could not be sent"
+    _FAILED_TO_SEND_REPLY = "Reply could not be sent"
     _MSG_LENGTH_ERROR = "Failed to get message length."
     _FAILED_HEADER = "Failed to prepare header for data."
     _LOST_CONNECTION_W_SRV = "Lost connection with the server."

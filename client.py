@@ -284,7 +284,9 @@ class Client(NetworkAgent):
     def run(self):
         self.setup_logger()
         self.running.set()
-        connection_success = self.handle_connect(SERVER_IP, SERVER_PORT)
+        # connection_success = self.handle_connect(SERVER_IP, SERVER_PORT)
+        connection_success = self.handle_connect("2.80.232.129", SERVER_PORT)
+
         if not connection_success:
             self.q_listener.start()
             self.logger.info("Exiting...")
