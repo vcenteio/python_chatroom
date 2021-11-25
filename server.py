@@ -457,16 +457,6 @@ class Server(NetworkAgent):
             f"Client with ID [{client.ID}] disconnected."
         )
     
-    def terminate_enqueuer_thread(self, t: threading.Thread, q: queue.Queue):
-        q.put(QueueSignal._terminate_thread) 
-        self.logger.debug(f"Joining {t.name.lower()} queue.")
-        q.join()
-        if t.is_alive():
-            try:
-                t.join()
-            except RuntimeError:
-                pass
-        self.logger.debug(f"{t.name.lower()} thread terminated.")
 
     def shutdown(self):
         self.logger.info("Server shutting down.")
@@ -507,19 +497,19 @@ class Server(NetworkAgent):
         self.logger.debug(f"Client threads: {self.client_threads}")
 
         # terminate broadcast thread
-        self.terminate_enqueuer_thread(
+        self.terminate_thread(
             self.broadcast_enqueuer_thread,
             self.broadcast_q
         )
 
         # terminate reply thread
-        self.terminate_enqueuer_thread(
+        self.terminate_thread(
             self.reply_enqueuer_thread,
             self.reply_q
         )
 
         # terminate dispatch thread
-        self.terminate_enqueuer_thread(
+        self.terminate_thread(
             self.dispatch_thread,
             self.dispatch_q
         )

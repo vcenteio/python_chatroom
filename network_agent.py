@@ -26,6 +26,40 @@ class NetworkAgent(threading.Thread):
             logger.get_file_handler(self.name)
         )
         self.q_listener.respect_handler_level = True
+    
+
+    def terminate_thread(self, t: threading.Thread, q: queue.Queue = None):
+        thread_name = t.name.lower()
+        if q:
+            if t.is_alive():
+                self.logger.debug(f"Sent terminate command to {t.name.lower()} queue.")
+                q.put(QueueSignal._terminate_thread) 
+            self.logger.debug(f"Joining {thread_name} queue.")
+            q.join()
+            self.logger.debug(f"{thread_name} queue joined.")
+        if t.is_alive():
+            try:
+                self.logger.debug(f"Joining {thread_name} thread.")
+                t.join()
+                self.logger.debug(f"{thread_name} thread joined.")
+            except RuntimeError:
+                pass
+        self.logger.debug(f"{t.name.lower()} thread terminated.")
+
+
+    def close_socket(self, s: socket.socket):
+        self.logger.debug("Closing socket.")
+        try:
+            s.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        try:
+            s.close()
+            self.logger.debug("Socket closed.")
+        except OSError as e:
+            self.logger.debug("Socket already closed.")
+            self.logger.debug(f"Error description: {e}")
+
 
     def send(self, socket: socket.socket, data: bytes) -> bool:
         """
