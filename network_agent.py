@@ -1,4 +1,7 @@
 ﻿from logging import handlers
+
+from cryptography.fernet import InvalidToken
+from cryptography.exceptions import *
 from message import *
 import logger
 
@@ -147,14 +150,19 @@ class NetworkAgent(threading.Thread):
             self.logger.debug("Got invalid key.")
             raise InvalidRSAKey
 
-        return  base64.urlsafe_b64decode(
-                    self.rsa_decrypt_b(
-                        base64.urlsafe_b64decode(
-                            Fernet(self.fernet_key).decrypt(data)
-                        ),
-                        key
+        try:
+            decrypted_data =  base64.urlsafe_b64decode(
+                        self.rsa_decrypt_b(
+                            base64.urlsafe_b64decode(
+                                Fernet(self.fernet_key).decrypt(data)
+                            ),
+                            key
+                        )
                     )
-                )
+            return decrypted_data
+        except InvalidToken as e:
+            self.logger.debug(e)
+            raise EncryptionError("Invalid Fernet token.")
 
     @staticmethod
     def generate_rsa_keys():

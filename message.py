@@ -73,6 +73,10 @@ class ErrorDescription():
     _UNKNOWN_MSG_TYPE = "type unknown"
     _MSG_UNPACK_ERROR = "error unpacking message"
 
+class QueueSignal(Enum):
+    _terminate_thread = auto()
+    _shutdown = auto()
+
 class Message():
 
     CLIENT_ID = int()

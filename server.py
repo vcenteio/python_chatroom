@@ -79,13 +79,20 @@ class Server(NetworkAgent):
                         f"content = {message._data}"
                     ]))
                     self.logger.debug(e)
-            self.broadcast_q.task_done()
+                finally:
+                    time.sleep(SRV_SEND_SLEEP_TIME)
+                    self.broadcast_q.task_done()
+            elif message == QueueSignal._terminate_thread:
+                self.broadcast_q.task_done()
+                break
+        self.logger.debug("Exiting broadcast thread persistence loop.")
+                
     
     def reply_enqueuer(self):
         while self.running.is_set():
             reply = self.reply_q.get()
-            client = self.clients[reply._to]
             if isinstance(reply, Reply):
+                client = self.clients[reply._to]
                 try:
                     packed_reply = reply.pack(self.hmac_key)
                     encrypted_reply = self.encrypt(
@@ -108,31 +115,47 @@ class Server(NetworkAgent):
                         f"content = {reply._data}"
                     ]))
                     self.logger.debug(e)
-            self.reply_q.task_done()
+                finally:
+                    time.sleep(SRV_SEND_SLEEP_TIME)
+                    self.reply_q.task_done()
+            elif reply == QueueSignal._terminate_thread:
+                self.reply_q.task_done()
+                break
+        self.logger.debug("Exiting reply thread persistence loop.")
+
 
     def dispatch(self):
         while self.running.is_set():
-            data, client = self.dispatch_q.get()
-            try:
-                self.send(client.socket, data)
-            except SendError as e:
-                self.logger.error(" ".join([
-                    ErrorDescription._FAILED_TO_SEND,
-                    f"to client with ID [{client.ID}]."
-                ]))
-                self.logger.debug(e)
-            except CriticalTransferError as e:
-                self.logger.error(" ".join([
-                    f"Client with ID [{client.ID}]",
-                    "disconnected unexpectedly."
-                ]))
-                self.logger.debug(e)
-                self.disconnect_client(client)
-            finally:
-                time.sleep(SRV_SEND_SLEEP_TIME)
+            item = self.dispatch_q.get()
+            if item is QueueSignal._terminate_thread:
                 self.dispatch_q.task_done()
+                break
+            elif isinstance(item, tuple):
+                data, client = item
+                if isinstance(data, bytes) \
+                    and isinstance(client, ClientEntry):
+                    try:
+                        self.send(client.socket, data)
+                    except SendError as e:
+                        self.logger.error(" ".join([
+                            ErrorDescription._FAILED_TO_SEND,
+                            f"to client with ID [{client.ID}]."
+                        ]))
+                        self.logger.debug(e)
+                    except CriticalTransferError as e:
+                        self.logger.error(" ".join([
+                            f"Client with ID [{client.ID}]",
+                            "disconnected."
+                        ]))
+                        self.logger.debug(e)
+                        self.disconnect_client(client)
+                    finally:
+                        time.sleep(0.1)
+                        self.dispatch_q.task_done()
+        self.logger.debug("Exiting dispatch thread persistence loop.")
 
     def handle_client(self, client: ClientEntry):
+        errors_count = 0
         while client.active.is_set() and self.running.is_set():
             try:
                 buffer = self.receive_buffer(client.socket)
@@ -148,6 +171,10 @@ class Server(NetworkAgent):
                     ErrorDescription._FAILED_RECV
                 )
                 self.broadcast_q.put(reply)
+                errors_count += 1
+                if errors_count > CRITICAL_ERRORS_MAX_NUMBER:
+                    self.disconnect_client(client)
+                    time.sleep(0.1)
                 continue
 
             except CriticalTransferError as e:
@@ -200,7 +227,7 @@ class Server(NetworkAgent):
                                 f"client with ID [{message._from[0]}]."
                                 )
                             client.active.clear()
-                            self.shutdown_q.put(None)
+                            self.shutdown_q.put(QueueSignal._shutdown)
                     elif isinstance(message, Reply):
                         #just print the message for now
                         self.logger.info(
@@ -372,27 +399,35 @@ class Server(NetworkAgent):
         self.socket.bind(self.address)
         self.socket.listen()
         self.running.set()
-        # self.broadcast_thread = threading.Thread(target=self.broadcast)
-        # self.broadcast_thread.start()
+
         self.broadcast_enqueuer_thread = threading.Thread(
-            target=self.broadcast_enqueuer
+            target=self.broadcast_enqueuer,
+            name="BROADCASTER"
             )
         self.broadcast_enqueuer_thread.start()
+
         self.reply_enqueuer_thread = threading.Thread(
-            target=self.reply_enqueuer
+            target=self.reply_enqueuer,
+            name="REPLIER"
             )
         self.reply_enqueuer_thread.start()
+
         self.dispatch_thread = threading.Thread(
-            target=self.dispatch
-        )
+            target=self.dispatch,
+            name="DISPATCHER"
+            )
         self.dispatch_thread.start()
-        self.connections_thread = threading.Thread(target=self.handle_connections)
+
+        self.connections_thread = threading.Thread(
+            target=self.handle_connections,
+            name="CONNECTION_HANDLER"
+            )
         self.connections_thread.start()
 
-        # listen for shutdown command from a client thread
+        # wait for shutdown command from a client thread
         self.shutdown_q = queue.Queue()
         _sentinel = self.shutdown_q.get()
-        if _sentinel is None:
+        if _sentinel is QueueSignal._shutdown:
             self.shutdown()
     
     def disconnect_client(self, client: ClientEntry):
@@ -421,13 +456,24 @@ class Server(NetworkAgent):
         self.logger.info(
             f"Client with ID [{client.ID}] disconnected."
         )
+    
+    def terminate_enqueuer_thread(self, t: threading.Thread, q: queue.Queue):
+        q.put(QueueSignal._terminate_thread) 
+        self.logger.debug(f"Joining {t.name.lower()} queue.")
+        q.join()
+        if t.is_alive():
+            try:
+                t.join()
+            except RuntimeError:
+                pass
+        self.logger.debug(f"{t.name.lower()} thread terminated.")
 
     def shutdown(self):
         self.logger.info("Server shutting down.")
         self.running.clear()
         time.sleep(3)
 
-        # terminate QueueListener thread and remove QueueHandler 
+        # terminate logger QueueListener thread and remove QueueHandler 
         self.q_listener.stop()
         for handler in self.logger.handlers:
             self.logger.removeHandler(handler)
@@ -461,25 +507,22 @@ class Server(NetworkAgent):
         self.logger.debug(f"Client threads: {self.client_threads}")
 
         # terminate broadcast thread
-        self.broadcast_q.put(1) # put dummy object and make it call taskdone()
-        self.logger.debug("Waiting for broadcast queue to get empty.")
-        if not self.broadcast_q.empty():
-            while True:
-                try:
-                    _ = self.broadcast_q.get_nowait()
-                    self.broadcast_q.task_done()
-                    print(_)
-                except queue.Empty:
-                    self.logger.debug("Broadcast queue empty.")
-                    break
-        self.logger.debug("Joining broadcast queue.")
-        self.broadcast_q.join()
-        if self.broadcast_thread.is_alive():
-            try:
-                self.broadcast_q.join()
-            except RuntimeError:
-                pass
-        self.logger.debug("Broadcast thread terminated.")
+        self.terminate_enqueuer_thread(
+            self.broadcast_enqueuer_thread,
+            self.broadcast_q
+        )
+
+        # terminate reply thread
+        self.terminate_enqueuer_thread(
+            self.reply_enqueuer_thread,
+            self.reply_q
+        )
+
+        # terminate dispatch thread
+        self.terminate_enqueuer_thread(
+            self.dispatch_thread,
+            self.dispatch_q
+        )
 
         # close server socket and terminate handle_connections thread
         try:
