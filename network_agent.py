@@ -194,7 +194,7 @@ class NetworkAgent(threading.Thread):
                         )
                     )
             return decrypted_data
-        except InvalidToken as e:
+        except (InvalidToken, InvalidSignature) as e:
             self.logger.debug(e)
             raise EncryptionError("Invalid Fernet token.")
 

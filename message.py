@@ -69,8 +69,8 @@ class ErrorDescription():
     _MSG_LENGTH_ERROR = "Failed to get message length."
     _FAILED_HEADER = "Failed to prepare header for data."
     _LOST_CONNECTION_W_SRV = "Lost connection with the server."
-    _INTEGRITY_FAILURE = "did not pass integrity check"
-    _UNKNOWN_MSG_TYPE = "type unknown"
+    _INTEGRITY_FAILURE = "Integrity check failed."
+    _UNKNOWN_MSG_TYPE = "Unknown message type."
     _MSG_UNPACK_ERROR = "error unpacking message"
 
 class QueueSignal(Enum):

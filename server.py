@@ -63,10 +63,13 @@ class Server(NetworkAgent):
                             packed_message,
                             client.public_key
                         )
+                        self.logger.debug("Putting command into dispatch queue.")
+                        self.lock.acquire()
                         self.dispatch_q.put((
                             encrypted_message,
                             client 
                         ))
+                        self.lock.release()
                 except (
                     InvalidDataForEncryption,
                     InvalidRSAKey,
@@ -89,7 +92,9 @@ class Server(NetworkAgent):
                 
     
     def reply_enqueuer(self):
-        while self.running.is_set():
+        active = threading.Event()
+        active.set()
+        while active.is_set() and self.running.is_set():
             reply = self.reply_q.get()
             if isinstance(reply, Reply):
                 client = self.clients[reply._to]
@@ -99,10 +104,13 @@ class Server(NetworkAgent):
                         packed_reply,
                         client.public_key
                     )
+                    self.logger.debug("Putting reply into dispatch queue.")
+                    self.lock.acquire()
                     self.dispatch_q.put((
                         encrypted_reply,
                         client
                     ))
+                    self.lock.release()
                 except (
                     InvalidDataForEncryption,
                     InvalidRSAKey,
@@ -117,24 +125,25 @@ class Server(NetworkAgent):
                     self.logger.debug(e)
                 finally:
                     time.sleep(SRV_SEND_SLEEP_TIME)
-                    self.reply_q.task_done()
             elif reply == QueueSignal._terminate_thread:
-                self.reply_q.task_done()
-                break
+                active.clear()
+            else:
+                self.logger.debug("Item's type is not Reply.")
+            self.reply_q.task_done()
         self.logger.debug("Exiting reply thread persistence loop.")
 
 
     def dispatch(self):
-        while self.running.is_set():
+        active = threading.Event()
+        active.set()
+        while active.is_set() and self.running.is_set():
             item = self.dispatch_q.get()
-            if item is QueueSignal._terminate_thread:
-                self.dispatch_q.task_done()
-                break
-            elif isinstance(item, tuple):
+            if isinstance(item, tuple):
                 data, client = item
                 if isinstance(data, bytes) \
                     and isinstance(client, ClientEntry):
                     try:
+                        self.logger.debug("Sending data.")
                         self.send(client.socket, data)
                     except SendError as e:
                         self.logger.error(" ".join([
@@ -151,14 +160,70 @@ class Server(NetworkAgent):
                         self.disconnect_client(client)
                     finally:
                         time.sleep(0.1)
-                        self.dispatch_q.task_done()
+                else:
+                    self.logger.debug(f"Item is not valid. Item = {item}")
+            elif item is QueueSignal._terminate_thread:
+                    active.clear()
+
+            self.dispatch_q.task_done()
         self.logger.debug("Exiting dispatch thread persistence loop.")
+
+    def handle_incoming_message(self, message: Message, client: ClientEntry):
+        if isinstance(message, Message):
+            #it's a message from the client
+            if isinstance(message, Command):
+                if message._code == CommandType.BROADCAST:
+                    reply = Reply(
+                        ReplyType.SUCCESS,
+                        (self._id, self.name),
+                        client.ID,
+                        message._id,
+                        ReplyDescription._SUCCESSFULL_RECV
+                    )
+                    self.broadcast_q.put(message)
+                    self.reply_q.put(reply)
+                    self.logger.info(
+                        f"Broadcast command received from " +
+                        f"client with ID [{message._from[0]}], " +
+                        f"Message ID = [{message._id}], " +
+                        f"Content = '{message._data}'"
+                    )
+                elif message._code == CommandType.QUERY:
+                    #just print the message for now
+                    print(message)
+                elif message._code == CommandType.DISCONNECT:
+                    self.logger.info(
+                        f"Disconnect request received from " +
+                        f"client with ID [{message._from[0]}]."
+                    )
+                    self.disconnect_client(client)
+                elif message._code == CommandType.SHUTDOWN:
+                    self.logger.info(
+                        f"Shutdown command received from " +
+                        f"client with ID [{message._from[0]}]."
+                        )
+                    client.active.clear()
+                    self.shutdown_q.put(QueueSignal._shutdown)
+            elif isinstance(message, Reply):
+                #just print the message for now
+                self.logger.info(
+                    f"Reply received from client with ID " +
+                    f"[{message._from[0]}], " +
+                    f"Message ID = [{message._message_id}], " +
+                    f"Content = '{message._data}'"
+                )
 
     def handle_client(self, client: ClientEntry):
         errors_count = 0
         while client.active.is_set() and self.running.is_set():
             try:
                 buffer = self.receive_buffer(client.socket)
+                decrypted_message = self.decrypt(
+                    buffer,
+                    self.private_key
+                )
+                message = Message.unpack(decrypted_message, self.hmac_key)
+                self.handle_incoming_message(message, client)
 
             except ReceiveError as e:
                 self.logger.error(ErrorDescription._FAILED_RECV)
@@ -170,12 +235,11 @@ class Server(NetworkAgent):
                     "Unknown",
                     ErrorDescription._FAILED_RECV
                 )
-                self.broadcast_q.put(reply)
+                self.reply_q.put(reply)
                 errors_count += 1
                 if errors_count > CRITICAL_ERRORS_MAX_NUMBER:
                     self.disconnect_client(client)
                     time.sleep(0.1)
-                continue
 
             except CriticalTransferError as e:
                 self.logger.error(" ".join([
@@ -183,60 +247,7 @@ class Server(NetworkAgent):
                     "disconnected unexpectedly."
                 ]))
                 self.disconnect_client(client)
-                continue
 
-            try:
-                decrypted_message = self.decrypt(
-                    buffer,
-                    self.private_key
-                )
-
-                message = Message.unpack(decrypted_message, self.hmac_key)
-
-                if isinstance(message, Message):
-                    #it's a message from the client
-                    if isinstance(message, Command):
-                        if message._code == CommandType.BROADCAST:
-                            reply = Reply(
-                                ReplyType.SUCCESS,
-                                (self._id, self.name),
-                                client.ID,
-                                message._id,
-                                ReplyDescription._SUCCESSFULL_RECV
-                            )
-                            self.broadcast_q.put(message)
-                            self.reply_q.put(reply)
-                            self.logger.info(
-                                f"Broadcast command received from " +
-                                f"client with ID [{message._from[0]}], " +
-                                f"Message ID = [{message._id}], " +
-                                f"Content = '{message._data}'"
-                            )
-                        elif message._code == CommandType.QUERY:
-                            #just print the message for now
-                            print(message)
-                        elif message._code == CommandType.DISCONNECT:
-                            self.logger.info(
-                                f"Disconnect request received from " +
-                                f"client with ID [{message._from[0]}]."
-                            )
-                            self.disconnect_client(client)
-                        elif message._code == CommandType.SHUTDOWN:
-                            self.logger.info(
-                                f"Shutdown command received from " +
-                                f"client with ID [{message._from[0]}]."
-                                )
-                            client.active.clear()
-                            self.shutdown_q.put(QueueSignal._shutdown)
-                    elif isinstance(message, Reply):
-                        #just print the message for now
-                        self.logger.info(
-                            f"Reply received from client with ID " +
-                            f"[{message._from[0]}], " +
-                            f"Message ID = [{message._message_id}], " +
-                            f"Content = '{message._data}'"
-                        )
-            # it's an error generated by the unpack function
             except IntegrityCheckFailed:
                 self.logger.error(
                     " ".join([
@@ -252,7 +263,7 @@ class Server(NetworkAgent):
                             "-",
                             ReplyDescription._INTEGRITY_FAILURE
                         )
-                self.broadcast_q.put(reply)
+                self.reply_q.put(reply)
             except UnknownMessageType:
                 self.logger.error(
                     ReplyDescription._UNKNOWN_MSG_TYPE
@@ -264,7 +275,7 @@ class Server(NetworkAgent):
                             "-",
                             ReplyDescription._UNKNOWN_MSG_TYPE
                         )
-                self.broadcast_q.put(reply)
+                self.reply_q.put(reply)
             except (InvalidDataForEncryption, InvalidRSAKey) as e:
                 self.logger.info("Could not receive message.")
                 self.logger.debug(e)
