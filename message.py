@@ -75,6 +75,7 @@ class ErrorDescription():
 
 class QueueSignal(Enum):
     _terminate_thread = auto()
+    _disconnect = auto()
     _shutdown = auto()
 
 class Message():

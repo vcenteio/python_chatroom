@@ -52,17 +52,17 @@ class Client(NetworkAgent):
 
                     self.send(self.socket, encrypted_message)
 
-                    self.logger.debug(" ".join([
-                        SuccessDescription._SUCCESSFULL_SEND,
-                        f"Class=[{message.__class__.__name__}] ",
-                        f"Type=[{message._code}] ",
+                    self.logger.debug(
+                        f"{SuccessDescription._SUCCESSFULL_SEND} "\
+                        f"Class=[{message.__class__.__name__}] "\
+                        f"Type=[{message._code}] "\
                         f"Content: {message._data}"
-                    ]))
+                    )
                 except (NullData, NonBytesData, SendError) as e:
-                        self.logger.debug(" ".join([
-                            ErrorDescription._FAILED_TO_SEND,
+                        self.logger.debug(
+                            f"{ErrorDescription._FAILED_TO_SEND} "\
                             f"Message ID = [{message._id}]"
-                        ]))
+                        )
                 except (InvalidDataForEncryption, InvalidRSAKey) as e:
                     self.logger.error("Could not send message.")
                     self.logger.debug(e)
@@ -154,8 +154,10 @@ class Client(NetworkAgent):
                     self.logger.debug(e)
                 os_errors_count += 1
                 if os_errors_count > CRITICAL_ERRORS_MAX_NUMBER:
-                    self.logger.critical("Lost connection with the server.")
-                    self.disconnect_q.put(1)
+                    self.logger.critical(
+                        ErrorDescription._LOST_CONNECTION_W_SRV
+                        )
+                    self.disconnect_q.put(QueueSignal._disconnect)
                     time.sleep(0.05)
 
             except IntegrityCheckFailed:
@@ -195,9 +197,9 @@ class Client(NetworkAgent):
                     )
             self.dispatch_q.put(message)
             time.sleep(1)
-            self.disconnect_q.put(1)
+            self.disconnect_q.put(QueueSignal._disconnect)
         elif data == "c:disc":
-            self.disconnect_q.put(1)
+            self.disconnect_q.put(QueueSignal._disconnect)
         else:
             message = Command(
                         CommandType.BROADCAST,
@@ -345,11 +347,13 @@ class Client(NetworkAgent):
         self.q_listener.start()
 
         # wait for disconnect signal
-        disconnect_signal = self.disconnect_q.get()
-        if disconnect_signal: self.handle_disconnect()
-        self.logger.info("Disconnected.")
-        time.sleep(1)
-        self.q_listener.stop()
+        while self.running.is_set():
+            signal = self.disconnect_q.get()
+            if signal is QueueSignal._disconnect:
+                self.handle_disconnect()
+                self.logger.info("Disconnected.")
+                time.sleep(1)
+                self.q_listener.stop()
 
 
 
