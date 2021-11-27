@@ -56,9 +56,11 @@ class NetworkAgent(threading.Thread):
         try:
             s.close()
             self.logger.debug("Socket closed.")
+            return True
         except OSError as e:
             self.logger.debug("Socket already closed.")
             self.logger.debug(f"Error description: {e}")
+            return False
 
 
     def send(self, socket: socket.socket, data: bytes) -> bool:

@@ -36,6 +36,7 @@ class Server(NetworkAgent):
         self.dispatch_q = queue.Queue()
         self.broadcast_q = queue.Queue()
         self.reply_q = queue.Queue()
+        self.shutdown_q = queue.Queue()
         self.lock = threading.Lock()
         self.client_id_ctrl_set = set()
     
@@ -444,6 +445,41 @@ class Server(NetworkAgent):
                     self.logger.info("Could not handle connection request.")
                     self.logger.debug(f"Description: {e}")
 
+    def setup_worker_threads(self):
+        self.logger.debug("Setting up worker threads.")
+        self.logger.debug("Starting broadcaster thread.")
+        self.broadcast_enqueuer_thread = threading.Thread(
+            target=self.broadcast_enqueuer,
+            name="BROADCASTER"
+            )
+        self.broadcast_enqueuer_thread.start()
+        self.logger.debug("Broadcaster thread started.")
+
+        self.logger.debug("Starting replier thread.")
+        self.reply_enqueuer_thread = threading.Thread(
+            target=self.reply_enqueuer,
+            name="REPLIER"
+            )
+        self.reply_enqueuer_thread.start()
+        self.logger.debug("Replier thread started.")
+
+        self.logger.debug("Starting dispatcher thread.")
+        self.dispatch_thread = threading.Thread(
+            target=self.dispatch,
+            name="DISPATCHER"
+            )
+        self.dispatch_thread.start()
+        self.logger.debug("Dispatcher thread started.")
+
+        self.logger.debug("Starting connection handler thread.")
+        self.connections_thread = threading.Thread(
+            target=self.handle_connections,
+            name="CONNECTION_HANDLER"
+            )
+        self.connections_thread.start()
+        self.logger.debug("Connection handler thread started.")
+        self.logger.debug("Worker threads setup finished.")
+
     def run(self):
         self.setup_logger()
         self.q_listener.start()
@@ -459,136 +495,94 @@ class Server(NetworkAgent):
         self.logger.debug(f"HMAC key: {self.hmac_key}")
         self.running.set()
 
-        self.broadcast_enqueuer_thread = threading.Thread(
-            target=self.broadcast_enqueuer,
-            name="BROADCASTER"
-            )
-        self.broadcast_enqueuer_thread.start()
-
-        self.reply_enqueuer_thread = threading.Thread(
-            target=self.reply_enqueuer,
-            name="REPLIER"
-            )
-        self.reply_enqueuer_thread.start()
-
-        self.dispatch_thread = threading.Thread(
-            target=self.dispatch,
-            name="DISPATCHER"
-            )
-        self.dispatch_thread.start()
-
-        self.connections_thread = threading.Thread(
-            target=self.handle_connections,
-            name="CONNECTION_HANDLER"
-            )
-        self.connections_thread.start()
-
+        self.setup_worker_threads()
         # wait for shutdown command from a client thread
-        self.shutdown_q = queue.Queue()
-        _sentinel = self.shutdown_q.get()
-        if _sentinel is QueueSignal._shutdown:
-            self.shutdown()
+        while self.running.is_set():
+            signal = self.shutdown_q.get()
+            if signal is QueueSignal._shutdown:
+                self.shutdown()
 
     def disconnect_client(self, client: ClientEntry):
         client.active.clear()
-        try:
-            client.socket.shutdown(socket.SHUT_RDWR)
-        except OSError:
-            pass
-        try:
-            client.socket.close()
-        except OSError:
-            self.logger.error(
-                    "Error closing client socket: "\
-                    "client socket already closed. "\
-                    f"Client ID=[{client.ID}]"
-            )
+        self.logger.debug(f"Closing client socket. Client ID #[{client.ID}]")
+        self.close_socket(client.socket)
         try:
             self.clients.pop(client.ID)
         except KeyError as e:
             self.logger.debug(
-                f"Key error while popping client from dict. "\
+                f"Could not remove client from list. "\
                 f"Description={e}"
                 )
         self.logger.info(
-            f"Client with ID [{client.ID}] disconnected."
+            f"Client with ID #[{client.ID}] disconnected."
         )
+    
+    def terminate_client_thread(self, thread: threading.Thread):
+        try:
+            thread.join()
+            self.logger.debug(f"Client with thread name [{thread.name}] joined.")
+        except RuntimeError:
+            self.logger.warning(
+                "Could not join client thread. "\
+                f"Thread name = [{thread.name}] "\
+                f"Alive = [{thread.is_alive()}]"
+            )
+
+    def disconnect_all_clients(self):
+        self.logger.debug("Closing client sockets.")
+        clients = tuple(self.clients.values())
+        for client in clients:
+            self.disconnect_client(client)
+            time.sleep(0.2)
+        if not self.clients:
+            self.logger.debug("No clients connected.")
+        else:
+            self.logger.debug(
+                f"Some clients could not be removed from the list. "\
+                f"Active clients: {self.clients}"
+            )
     
     def shutdown(self):
         self.logger.info("Server shutting down.")
         self.running.clear()
         time.sleep(2)
-
-        # terminate logger QueueListener thread and remove QueueHandler 
+        # reconfig logger: queue handler -> direct file and stream handlers
         self.logger.debug("Terminating QueueListener thread.")
         self.q_listener.stop()
         self.logger.debug("QueueListener thread terminated.")
         for handler in self.logger.handlers:
             self.logger.removeHandler(handler)
-        
-        # setup new simple handlers for shutdown logging
         self.logger.addHandler(logger.get_stream_handler())
         self.logger.addHandler(logger.get_file_handler(self.name, "a"))
-
         # disconnect clients
-        self.logger.debug("Closing client connections.")
-        clients = tuple(self.clients.values())
-        for client in clients:
-            self.disconnect_client(client)
-            time.sleep(0.5)
-        if not self.clients:
-            self.logger.debug("No clients connected.")
-        else:
-            self.logger.debug(f"Active clients: {self.clients}")
-
+        self.disconnect_all_clients()
         # terminate client threads
+        self.logger.debug("Terminating client threads.")
         for thread in self.client_threads.values():
-            try:
-                thread.join()
-            except RuntimeError:
-                self.logger.warning(
-                    "Could not join client thread. "\
-                    f"Thread name = [{thread.name}] "\
-                    f"Alive = [{thread.is_alive()}]"
-
-                )
+            self.terminate_client_thread(thread)
         self.logger.debug(f"Client threads: {self.client_threads}")
-
         # terminate broadcast thread
         self.terminate_thread(
             self.broadcast_enqueuer_thread,
             self.broadcast_q
         )
-
         # terminate reply thread
         self.terminate_thread(
             self.reply_enqueuer_thread,
             self.reply_q
         )
-
         # terminate dispatch thread
         self.terminate_thread(
             self.dispatch_thread,
             self.dispatch_q
         )
-
-        # close server socket and terminate handle_connections thread
-        try:
-            self.socket.close()
-        except OSError:
-            self.logger.debug("Server socket already closed.")
+        # close server socket and connection handler thread
+        self.logger.debug("Closing server's socket.")
+        self.close_socket(self.socket)
+        self.logger.debug("Server's socket closed.")
+        self.terminate_thread(self.connections_thread)
         
-        if self.connections_thread.is_alive():
-            self.logger.debug("Waiting for connections thread to terminate.")
-            try:
-                self.connections_thread.join()
-            except RuntimeError:
-                pass
-        self.logger.debug(
-            "Connections thread terminated. "\
-            f"Threads list: {threading.enumerate()}"
-        )
-
+        self.logger.debug(f"Threads list: {threading.enumerate()}")
         self.logger.info("Shutdown process finished. Exiting.")
         
 

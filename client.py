@@ -315,7 +315,7 @@ class Client(NetworkAgent):
         self.logger.debug(f"My ID: {self.ID}")
         self.logger.debug("Setup data exchange completed.")
 
-    def setup_workers_thread(self):
+    def setup_worker_threads(self):
         self.logger.debug("Starting chatbox writer thread.")
         self.chatbox_thread = threading.Thread(
             target=self.write_to_chatbox,
@@ -355,7 +355,7 @@ class Client(NetworkAgent):
 
         self.exchange_keys_with_server()
         self.exchange_setup_data_with_server()
-        self.setup_workers_thread()
+        self.setup_worker_threads()
 
         # wait for disconnect signal
         while self.running.is_set():
