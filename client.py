@@ -35,7 +35,6 @@ class Client(NetworkAgent):
             self.chatbox_q.task_done()
         self.logger.debug("Exiting chatbox_writer thread persistence loop.")
         
-
     def dispatch(self):
         os_errors_count = 0
         active_thread = threading.Event()
@@ -74,22 +73,20 @@ class Client(NetworkAgent):
                         self.logger.critical(
                             ErrorDescription._LOST_CONNECTION_W_SRV
                             )
-                        self.disconnect_q.put(1)
+                        self.disconnect_q.put(QueueSignal._disconnect)
                         time.sleep(0.05)
-                    continue
                 finally:
                     time.sleep(CLT_SEND_SLEEP_TIME)
-                    self.dispatch_q.task_done()
             elif message is QueueSignal._terminate_thread:
                 self.logger.debug("Terminate thread signal received.")
                 active_thread.clear()
-                self.dispatch_q.task_done()
             else:
                 self.logger.debug(
                     f"{ErrorDescription._UNKNOWN_MSG_TYPE} "\
                     f"Message = {message} "\
                     f"type = {type(message)}"
                     )
+            self.dispatch_q.task_done()
         self.logger.debug("Exiting dispatch thread persistence loop.")
 
     def handle_incoming_message(self, message):
@@ -120,7 +117,6 @@ class Client(NetworkAgent):
                 )
         else:
             raise TypeError("Not a message object.")
-
 
     def handle_receive(self):
         os_errors_count = 0
@@ -189,6 +185,7 @@ class Client(NetworkAgent):
                 time.sleep(CLT_RECV_SLEEP_TIME)
     
     def handle_input(self, data: str):
+        # this is for development purposes
         if data == "c:shut":
             message = Command(
                         CommandType.SHUTDOWN,
@@ -196,7 +193,7 @@ class Client(NetworkAgent):
                         data,
                     )
             self.dispatch_q.put(message)
-            time.sleep(1)
+            time.sleep(0.5)
             self.disconnect_q.put(QueueSignal._disconnect)
         elif data == "c:disc":
             self.disconnect_q.put(QueueSignal._disconnect)
@@ -235,7 +232,7 @@ class Client(NetworkAgent):
         self.dispatch_q.put(disconnect_cmd)
         try:
             self.dispatch_thread.join()
-            self.logger.debug("Dispatch thread terminated.")
+            self.logger.debug("Dispatcher thread terminated.")
         except RuntimeError:
             # The running flag is cleared at this point,
             # so, after dispatching the disconnect command above,
@@ -259,58 +256,55 @@ class Client(NetworkAgent):
 
         self.logger.debug("Disconnect process finished.")
     
-    def run(self):
-        self.setup_logger()
-        self.running.set()
-        connection_success = self.handle_connect(SERVER_IP, SERVER_PORT)
-
-        if not connection_success:
-            self.q_listener.start()
-            self.logger.info("Exiting...")
-            self.running.clear()
-            self.q_listener.stop()
-            time.sleep(0.2)
-            return
-
-        self.logger.debug(f"My public key: {self.public_key}")
-
+    def exchange_keys_with_server(self):
+        self.logger.debug(
+            "Starting encryption keys exchange with new server."
+        )
+        self.logger.debug(f"My RSA public key: {self.public_key}")
         # receive server public key
-        buffer = self.receive(self.socket).decode().split("-")
-        self.server_public_key = (int(buffer[0]), int(buffer[1]))
+        self.logger.debug("Waiting for server's RSA public key.")
+        data = self.receive(self.socket).decode().split("-")
+        self.server_public_key = (int(data[0]), int(data[1]))
         self.logger.debug(f"Server public key: {self.server_public_key}")
-        
         # send public key to server
         self.send(
             self.socket,
             f"{self.public_key[0]}-{self.public_key[1]}".encode()
         )
-
+        self.logger.debug("RSA public key sent.")
         # receive encrypted fernet and HMAC keys
+        self.logger.debug("Waiting for fernet key.")
         self.fernet_key = self.rsa_decrypt_b(
                             self.receive(self.socket),
                             self.private_key
                         )
         self.logger.debug(f"Fernet key: {self.fernet_key}")
+        self.logger.debug("Waiting for HMAC key.")
         self.hmac_key = self.rsa_decrypt_b(
                             self.receive(self.socket),
                             self.private_key
                         )
         self.logger.debug(f"HMAC key: {self.hmac_key}")
-
-        # send ecrypted client data 
-        initial_data =  json.dumps({
+        self.logger.debug("Keys exchange terminated.")
+    
+    def exchange_setup_data_with_server(self):
+        # send encrypted client data 
+        self.logger.debug("Sending setup data to server.")
+        setup_data =  json.dumps({
                             "nickname": self.nickname,
                             "color": self.color
                         })
         self.send(
             self.socket,
             self.rsa_encrypt_b(
-                initial_data.encode(),
+                setup_data.encode(),
                 self.server_public_key
             )
         )
+        self.logger.debug("Setup data successfully sent.")
 
         # receive ID generated by the server
+        self.logger.debug("Waiting for my ID.")
         self.ID =   struct.unpack("<I",
                         self.decrypt(
                             self.receive(self.socket),
@@ -319,7 +313,9 @@ class Client(NetworkAgent):
                     )[0]
         Message.CLIENT_ID = self.ID
         self.logger.debug(f"My ID: {self.ID}")
+        self.logger.debug("Setup data exchange completed.")
 
+    def setup_workers_thread(self):
         self.logger.debug("Starting chatbox writer thread.")
         self.chatbox_thread = threading.Thread(
             target=self.write_to_chatbox,
@@ -344,17 +340,34 @@ class Client(NetworkAgent):
         self.receive_thread.start()
         self.logger.debug("Receiver thread started.")
 
+    def run(self):
+        self.setup_logger()
+        self.running.set()
         self.q_listener.start()
+        connection_success = self.handle_connect(SERVER_IP, SERVER_PORT)
+
+        if not connection_success:
+            self.logger.info("Exiting...")
+            self.running.clear()
+            self.q_listener.stop()
+            time.sleep(0.2)
+            return
+
+        self.exchange_keys_with_server()
+        self.exchange_setup_data_with_server()
+        self.setup_workers_thread()
 
         # wait for disconnect signal
         while self.running.is_set():
             signal = self.disconnect_q.get()
             if signal is QueueSignal._disconnect:
+                self.logger.debug("Got a disconnect signal.")
                 self.handle_disconnect()
                 self.logger.info("Disconnected.")
                 time.sleep(1)
                 self.q_listener.stop()
-
+            else:
+                self.logger.debug("Got a invalid disconnect signal.")
 
 
 #for test purposes

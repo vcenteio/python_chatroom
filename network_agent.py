@@ -141,20 +141,19 @@ class NetworkAgent(threading.Thread):
             raise CriticalTransferError
         
     @staticmethod
-    def can_receive_from(socket: socket.socket) -> bool:
-        readable, _, _ = select.select([socket], [], [], 0.5)
-        return True if socket in readable else False
+    def can_receive_from(s: socket.socket) -> bool:
+        readable, _, _ = select.select([s], [], [], 0.5)
+        return True if s in readable else False
     
     @staticmethod
-    def can_send_to(socket: socket.socket) -> bool:
-        _, writeable, _ = select.select([], [socket], [], 0.5)
-        return True if socket in writeable else False
+    def can_send_to(s: socket.socket) -> bool:
+        _, writeable, _ = select.select([], [s], [], 0.5)
+        return True if s in writeable else False
 
-    def receive_buffer(self, socket: socket.socket):
-        while not self.can_receive_from(socket):
+    def receive_buffer(self, s: socket.socket):
+        while not self.can_receive_from(s):
             continue
-
-        return self.receive(socket) 
+        return self.receive(s) 
 
     # encryption methods
     def encrypt(self, data: bytes, key: tuple) -> bytes:

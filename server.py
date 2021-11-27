@@ -6,6 +6,7 @@ import sys
 import os
 import logger
 
+
 class ClientEntry:
     def __init__(
             self, socket: socket.socket, address: tuple,
@@ -97,7 +98,6 @@ class Server(NetworkAgent):
             self.broadcast_q.task_done()
         self.logger.debug("Exiting broadcast thread persistence loop.")
                 
-    
     def reply_enqueuer(self):
         active = threading.Event()
         active.set()
@@ -145,7 +145,6 @@ class Server(NetworkAgent):
             self.reply_q.task_done()
         self.logger.debug("Exiting reply thread persistence loop.")
 
-
     def dispatch(self):
         active = threading.Event()
         active.set()
@@ -184,7 +183,6 @@ class Server(NetworkAgent):
 
             self.dispatch_q.task_done()
         self.logger.debug("Exiting dispatch thread persistence loop.")
-
 
     def handle_incoming_message(self, message: Message, client: ClientEntry):
         if isinstance(message, Message):
@@ -319,7 +317,6 @@ class Server(NetworkAgent):
             f"Client ID = [{client.ID}]"
         )
     
-
     def exchange_keys_with_client(self, client_socket: socket.socket):
         self.logger.debug(
             "Starting encryption keys exchange with new client."
@@ -339,7 +336,7 @@ class Server(NetworkAgent):
         client_public_key = (int(buffer[0]), int(buffer[1]))
         self.logger.debug(f"Client public key: {client_public_key}")
 
-        # encrypt fernet and HMAC keys with client's public key and sent them to client
+        # encrypt fernet and HMAC keys with client's public key and send them to client
         self.logger.debug("Sending Fernet key.")
         self.send(
             client_socket,
@@ -357,71 +354,67 @@ class Server(NetworkAgent):
             )
         return client_public_key
 
+    def exchange_setup_data_with_client(self, client_socket: socket.socket,
+        client_public_key: tuple[int, int], client_id: int):
 
-    def receive_client_initial_data(self, client_socket: socket.socket):
-        self.logger.debug("Waiting for client's initial data.")
-        initial_data = json.loads(
+        # receive client's setup data
+        self.logger.debug("Waiting for client's setup data.")
+        setup_data = json.loads(
             self.rsa_decrypt_b(
                 self.receive(client_socket), self.private_key
             )
         )
         self.logger.debug(
-            f"Client initial data received: {initial_data}"
+            f"Client setup data received: {setup_data}"
         )
-        return initial_data
-    
-
-    def give_client_new_id(self, socket: socket.socket, pk: tuple):
-        new_id = self.generate_client_id()
-        self.logger.debug(f"ID #[{new_id}] generated.")
-        self.logger.debug(f"Sending ID #[{new_id}] to new client.")
+        # send generated id number to client
+        self.logger.debug(f"Sending ID #[{client_id}] to new client.")
         self.send(
-            socket,
-            self.encrypt(struct.pack("<I", new_id), pk)
+            client_socket,
+            self.encrypt(struct.pack("<I", client_id), client_public_key)
         )
         self.logger.debug("Client ID sent successfully.")
+        return setup_data
 
-        return new_id
-
-
-    def setup_new_client(self, socket: socket.socket, address: tuple):
+    def setup_new_client(self, client_socket: socket.socket, address: tuple):
         self.logger.debug("Setting up new client.")
         # keys exchange
-        client_public_key = self.exchange_keys_with_client(socket)
-
-        # receive initial data from client
-        initial_data = self.receive_client_initial_data(socket)
-
-        # send new ID to client
-        new_id = self.give_client_new_id(socket, client_public_key)
-
+        client_public_key = self.exchange_keys_with_client(client_socket)
+        # generate an id for the new client
+        new_id = self.generate_client_id()
+        self.logger.debug(f"ID #[{new_id}] generated.")
+        # exchange setup data with client
+        client_setup_data = self.exchange_setup_data_with_client(
+            client_socket,
+            client_public_key,
+            new_id
+            )
         # create client entry
         new_client = ClientEntry(
-            socket,
+            client_socket,
             address,
-            initial_data["nickname"],
-            initial_data["color"],
+            client_setup_data["nickname"],
+            client_setup_data["color"],
             new_id,
             client_public_key
         )
-
         self.logger.debug(
             "New client registry successfully created, "\
             f"Client ID=[{new_client.ID}]"
         )
-
+        # add client to clients list
         self.clients.update({new_client.ID: new_client})
-
+        # create client's thread
         new_client_thread = threading.Thread(
             target=self.handle_client,
-            args=[new_client]
+            args=[new_client],
+            name=new_client.ID
         )
-        new_client_thread.name = new_client.ID
-
+        # add client's thread to threads list
         self.client_threads.update({
-            new_client_thread.name: new_client_thread
+            int(new_client_thread.name): new_client_thread
         })
-
+        # start new client's thread
         self.logger.debug(f"Starting client [{new_client.ID}] thread.")
         new_client.active.set()
         new_client_thread.start()
@@ -429,29 +422,27 @@ class Server(NetworkAgent):
 
         return new_client
 
-
     def handle_connections(self):
         while self.running.is_set():
             self.logger.info("Waiting for connections...")
             try:
                 client_socket, client_address = self.socket.accept()
-            except OSError as e:
+
+                self.logger.debug(f"New client connection from {client_address}")
+
+                new_client = self.setup_new_client(client_socket, client_address)
+
+                self.logger.info(
+                    "New client connected, "\
+                    f"Client ID=[{new_client.ID}]"
+                )
+                self.logger.debug(f"Online clients: {self.clients}")
+                self.logger.debug(f"Clients threads: {self.client_threads}")
+
+            except (OSError, CriticalTransferError) as e:
                 if self.running.is_set():
                     self.logger.info("Could not handle connection request.")
                     self.logger.debug(f"Description: {e}")
-                continue
-
-            self.logger.debug(f"New client connection from {client_address}")
-
-            new_client = self.setup_new_client(client_socket, client_address)
-
-            self.logger.info(
-                "New client connected, "\
-                f"Client ID=[{new_client.ID}]"
-            )
-            self.logger.debug(f"Online clients: {self.clients}")
-            self.logger.debug(f"Clients threads: {self.client_threads}")
-
 
     def run(self):
         self.setup_logger()
@@ -498,7 +489,6 @@ class Server(NetworkAgent):
         if _sentinel is QueueSignal._shutdown:
             self.shutdown()
 
-    
     def disconnect_client(self, client: ClientEntry):
         client.active.clear()
         try:
@@ -524,7 +514,6 @@ class Server(NetworkAgent):
             f"Client with ID [{client.ID}] disconnected."
         )
     
-
     def shutdown(self):
         self.logger.info("Server shutting down.")
         self.running.clear()
@@ -537,7 +526,7 @@ class Server(NetworkAgent):
         for handler in self.logger.handlers:
             self.logger.removeHandler(handler)
         
-        # setup new handlers for shutdown logging
+        # setup new simple handlers for shutdown logging
         self.logger.addHandler(logger.get_stream_handler())
         self.logger.addHandler(logger.get_file_handler(self.name, "a"))
 
