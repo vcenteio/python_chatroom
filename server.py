@@ -2,7 +2,7 @@
 from message import *
 from constants import *
 from network_agent import NetworkAgent
-import sys
+from cryptographer import Cryptographer
 import os
 import logger
 
@@ -11,14 +11,14 @@ class ClientEntry:
     def __init__(
             self, socket: socket.socket, address: tuple,
             nickname: str, color: str, _id: int,
-            public_key: tuple
+            crypt: Cryptographer
         ):
         self.socket = socket
         self.address = address
         self.nickname = nickname
         self.color = color
         self.ID = _id
-        self.public_key = public_key
+        self.crypt = crypt 
         self.active = threading.Event()
         self.thread_id = int()
         
@@ -63,9 +63,8 @@ class Server(NetworkAgent):
                 try:
                     packed_message = message.pack(self.hmac_key)
                     for client in self.clients.values():
-                        encrypted_message = self.encrypt(
-                            packed_message,
-                            client.public_key
+                        encrypted_message = client.crypt.encrypt(
+                            packed_message
                         )
                         self.logger.debug(
                             "Putting command into dispatch queue."
@@ -108,9 +107,8 @@ class Server(NetworkAgent):
                 client = self.clients[reply._to]
                 try:
                     packed_reply = reply.pack(self.hmac_key)
-                    encrypted_reply = self.encrypt(
-                        packed_reply,
-                        client.public_key
+                    encrypted_reply = client.crypt.encrypt(
+                        packed_reply
                     )
                     self.logger.debug(
                         "Putting reply into dispatch queue."
@@ -237,9 +235,8 @@ class Server(NetworkAgent):
         while client.active.is_set() and self.running.is_set():
             try:
                 buffer = self.receive_buffer(client.socket)
-                decrypted_message = self.decrypt(
-                    buffer,
-                    self.private_key
+                decrypted_message = client.crypt.decrypt(
+                    buffer
                 )
                 message = Message.unpack(decrypted_message, self.hmac_key)
                 self.handle_incoming_message(message, client)
@@ -284,10 +281,11 @@ class Server(NetworkAgent):
                     time.sleep(0.1)
 
             except CriticalTransferError as e:
-                self.logger.error(
-                    f"Client with ID [{client.ID}] "\
-                    "disconnected unexpectedly."
-                )
+                if client.active.is_set():
+                    self.logger.error(
+                        f"Client with ID [{client.ID}] "\
+                        "disconnected unexpectedly."
+                    )
                 self.disconnect_client(client)
             except UnknownMessageType:
                 self.logger.error(
@@ -305,13 +303,13 @@ class Server(NetworkAgent):
                 self.logger.info("Could not receive message.")
                 self.logger.debug(e)
             finally:
-                if not client.active.is_set():
+                if client.active.is_set():
+                    time.sleep(SRV_RECV_SLEEP_TIME)
+                else:
                     self.logger.debug(
                         f"Client active flag changed: set -> clear, "\
                         f"Client ID = [{client.ID}]"
                     )
-                else:
-                    time.sleep(SRV_RECV_SLEEP_TIME)
 
         self.logger.debug(
             f"Exiting handle client loop, "\
@@ -322,47 +320,56 @@ class Server(NetworkAgent):
         self.logger.debug(
             "Starting encryption keys exchange with new client."
         )
-
         # send rsa public key to client
         self.logger.debug("Sending RSA public key to client.")
         self.send(
             client_socket,
             f"{self.public_key[0]}-{self.public_key[1]}".encode()
         )
+        time.sleep(0.1)
         self.logger.debug("RSA public key sent.")
-
         # receive client public key
         self.logger.debug("Waiting for client's RSA public key.")
         buffer = self.receive(client_socket).decode().split("-")
         client_public_key = (int(buffer[0]), int(buffer[1]))
+        time.sleep(0.1)
         self.logger.debug(f"Client public key: {client_public_key}")
-
         # encrypt fernet and HMAC keys with client's public key and send them to client
         self.logger.debug("Sending Fernet key.")
         self.send(
             client_socket,
-            self.rsa_encrypt_b(self.fernet_key, client_public_key)
+            self.fernet_key
         )
+        time.sleep(0.1)
         self.logger.debug("Fernet key sent.")
         self.logger.debug("Sending HMAC key.")
         self.send(
             client_socket,
-            self.rsa_encrypt_b(self.hmac_key, client_public_key)
+            self.hmac_key
         )
+        time.sleep(0.1)
         self.logger.debug("HMAC key sent.")
+        # create client cryptographer object
+        client_crypt = Cryptographer(
+            self.private_key,
+            client_public_key,
+            self.fernet_key,
+            self.logger
+        )
         self.logger.debug(
-            "Keys exchange terminated. Returning client's public key."
-            )
-        return client_public_key
+            "Keys exchange terminated. "\
+            "Returning client's cryptographer object."
+        )
+        return client_crypt 
 
     def exchange_setup_data_with_client(self, client_socket: socket.socket,
-        client_public_key: tuple[int, int], client_id: int):
+        client_crypt: Cryptographer, client_id: int):
 
         # receive client's setup data
         self.logger.debug("Waiting for client's setup data.")
         setup_data = json.loads(
-            self.rsa_decrypt_b(
-                self.receive(client_socket), self.private_key
+            client_crypt.decrypt(
+                self.receive(client_socket)
             )
         )
         self.logger.debug(
@@ -372,7 +379,7 @@ class Server(NetworkAgent):
         self.logger.debug(f"Sending ID #[{client_id}] to new client.")
         self.send(
             client_socket,
-            self.encrypt(struct.pack("<I", client_id), client_public_key)
+            client_crypt.encrypt(struct.pack("<I", client_id))
         )
         self.logger.debug("Client ID sent successfully.")
         return setup_data
@@ -380,14 +387,14 @@ class Server(NetworkAgent):
     def setup_new_client(self, client_socket: socket.socket, address: tuple):
         self.logger.debug("Setting up new client.")
         # keys exchange
-        client_public_key = self.exchange_keys_with_client(client_socket)
+        client_crypt = self.exchange_keys_with_client(client_socket)
         # generate an id for the new client
         new_id = self.generate_client_id()
         self.logger.debug(f"ID #[{new_id}] generated.")
         # exchange setup data with client
         client_setup_data = self.exchange_setup_data_with_client(
             client_socket,
-            client_public_key,
+            client_crypt,
             new_id
             )
         # create client entry
@@ -397,7 +404,7 @@ class Server(NetworkAgent):
             client_setup_data["nickname"],
             client_setup_data["color"],
             new_id,
-            client_public_key
+            client_crypt 
         )
         self.logger.debug(
             "New client registry successfully created, "\
@@ -512,21 +519,31 @@ class Server(NetworkAgent):
             self.logger.debug(
                 f"Could not remove client from list. "\
                 f"Description={e}"
-                )
+            )
         self.logger.info(
             f"Client with ID #[{client.ID}] disconnected."
         )
     
     def terminate_client_thread(self, thread: threading.Thread):
-        try:
-            thread.join()
-            self.logger.debug(f"Client with thread name [{thread.name}] joined.")
-        except RuntimeError:
-            self.logger.warning(
-                "Could not join client thread. "\
-                f"Thread name = [{thread.name}] "\
-                f"Alive = [{thread.is_alive()}]"
-            )
+        attempts = 0
+        while thread.is_alive() and attempts < 4:
+            try:
+                thread.join()
+                self.logger.debug(f"Client with thread name [{thread.name}] joined.")
+            except RuntimeError:
+                attempts += 1
+                if attempts < 4:
+                    self.logger.debug(
+                        f"Client thread [{thread.name}] is still alive. "\
+                        "Trying again."
+                    )
+                    time.sleep(1)
+                else:
+                    self.logger.warning(
+                        "Could not join client thread. "\
+                        f"Thread name = [{thread.name}] "\
+                        f"Alive = [{thread.is_alive()}]"
+                    )
 
     def disconnect_all_clients(self):
         self.logger.debug("Closing client sockets.")
