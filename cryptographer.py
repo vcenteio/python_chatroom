@@ -27,10 +27,6 @@ class Cryptographer():
             self.logger.debug("Got wrong data.")
             raise InvalidDataForEncryption
         
-        # if not key:
-        #     self.logger.debug("Got invalid key.")
-        #     raise InvalidRSAKey
-
         return  Fernet(self.fernet_key).encrypt(
                     base64.urlsafe_b64encode(
                         self.rsa_encrypt_b(
@@ -43,10 +39,6 @@ class Cryptographer():
         if data == False or data == None:
             self.logger.debug("Got wrong data.")
             raise InvalidDataForEncryption
-        
-        # if not key:
-        #     self.logger.debug("Got invalid key.")
-        #     raise InvalidRSAKey
 
         try:
             decrypted_data =  base64.urlsafe_b64decode(
@@ -62,7 +54,7 @@ class Cryptographer():
             raise EncryptionError("Invalid Fernet token.")
 
     @classmethod
-    def generate_rsa_keys(self):
+    def generate_rsa_keys(cls):
         # generate prime numbers
         primes = []
         for x in range(10, 100):
@@ -99,7 +91,6 @@ class Cryptographer():
         pk = (e, N)
         privkey = (d,N)
         if not d:
-            self.logger.debug(" ".join([p, q, N, T, e, d]))
             return None
         return (pk, privkey)
 

@@ -15,9 +15,9 @@ class NetworkAgent(threading.Thread):
         self.public_key, self.private_key = Cryptographer.generate_rsa_keys()
         self.fernet_key = b""
         self.hmac_key = b""
-        self.logging_q = queue.Queue(-1) # queue with infinite size for logging
+        self.logging_q = queue.Queue()
 
-    def send(self, socket: socket.socket, data: bytes) -> bool:
+    def send(self, s: socket.socket, data: bytes) -> bool:
         """
         Pack data with header containing message length and send it.
         """
@@ -34,9 +34,9 @@ class NetworkAgent(threading.Thread):
                 self.logger.error(ErrorDescription._FAILED_HEADER)
                 self.logger.debug(f"Struct error. Description: {e}")
             raise SendError
-
+        
         try:
-            socket.sendall(header + data)
+            s.sendall(header + data)
         except (OSError, ConnectionError) as e:
             if self.running.is_set():
                 self.logger.error(ErrorDescription._FAILED_TO_SEND)
@@ -45,9 +45,8 @@ class NetworkAgent(threading.Thread):
         
         return True
 
-    @staticmethod
-    def receive_message_lenght(socket: socket.socket) -> int:
-        header = socket.recv(HEADER_SIZE)
+    def receive_message_lenght(self, s: socket.socket) -> int:
+        header = s.recv(HEADER_SIZE)
         if header:
             msg_length = struct.unpack(
                     HEADER_FORMAT, 
@@ -61,23 +60,22 @@ class NetworkAgent(threading.Thread):
         else:
             raise NullMessageLength
 
-    @staticmethod    
-    def receive_message_data(socket: socket.socket, msg_length: int) -> bytes:
+    def receive_message_data(self, s: socket.socket, msg_length: int) -> bytes:
         if msg_length:
             data = []
             count = 0
             while count < msg_length:
-                buffer = socket.recv(RECV_BLOCK_SIZE)
+                buffer = s.recv(RECV_BLOCK_SIZE)
                 count += len(buffer)
                 data.append(buffer)
             return b"".join(data)
         else:
             raise NullMessageLength
 
-    def receive(self, socket: socket.socket) -> bytes:
+    def receive(self, s: socket.socket) -> bytes:
         try:
-            msg_length = self.receive_message_lenght(socket)
-            message_data = self.receive_message_data(socket, msg_length)
+            msg_length = self.receive_message_lenght(s)
+            message_data = self.receive_message_data(s, msg_length)
             return message_data
         except (EmptyHeader, NullMessageLength) as e:
             if self.running.is_set():
@@ -97,18 +95,13 @@ class NetworkAgent(threading.Thread):
         
     @staticmethod
     def can_receive_from(s: socket.socket) -> bool:
-        readable, _, _ = select.select([s], [], [], 0.5)
+        readable, _, _ = select.select((s,), (), (), 0.5)
         return True if s in readable else False
     
     @staticmethod
     def can_send_to(s: socket.socket) -> bool:
-        _, writeable, _ = select.select([], [s], [], 0.5)
+        _, writeable, _ = select.select((), (s,), (), 0.5)
         return True if s in writeable else False
-
-    def receive_buffer(self, s: socket.socket):
-        while not self.can_receive_from(s):
-            continue
-        return self.receive(s) 
 
     def setup_logger(self):
         self.logger = logger.get_new_logger(self.name)

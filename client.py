@@ -42,21 +42,19 @@ class Client(NetworkAgent):
         active_thread.set()
         while active_thread.is_set() and self.running.is_set():
             message = self.dispatch_q.get()
+            self.logger.debug("Got an item.")
             if isinstance(message, Message):
                 try:
                     packed_message = message.pack(self.hmac_key)
-                    encrypted_message = self.crypt.encrypt(
-                        packed_message
+                    encrypted_message = self.crypt.encrypt(packed_message)
+                    if self.can_send_to(self.socket):
+                        self.send(self.socket, encrypted_message)
+                        self.logger.debug(
+                            f"{SuccessDescription._SUCCESSFULL_SEND} "\
+                            f"Class=[{message.__class__.__name__}] "\
+                            f"Type=[{message._code}] "\
+                            f"Content: {message._data}"
                         )
-
-                    self.send(self.socket, encrypted_message)
-
-                    self.logger.debug(
-                        f"{SuccessDescription._SUCCESSFULL_SEND} "\
-                        f"Class=[{message.__class__.__name__}] "\
-                        f"Type=[{message._code}] "\
-                        f"Content: {message._data}"
-                    )
                 except (NullData, NonBytesData, SendError) as e:
                         self.logger.debug(
                             f"{ErrorDescription._FAILED_TO_SEND} "\
@@ -89,47 +87,87 @@ class Client(NetworkAgent):
             self.dispatch_q.task_done()
         self.logger.debug("Exiting dispatch thread persistence loop.")
 
-    def handle_incoming_message(self, message):
-        if isinstance(message, Message):
-            if isinstance(message, Command):
-                if message._code == CommandType.BROADCAST:
+    def handle_incoming_message(self, q: queue.Queue):
+        active = threading.Event()
+        active.set()
+        while active.is_set():
+            item = q.get()
+            if isinstance(item, bytes):
+                try:
+                    decrypted_message = self.crypt.decrypt(item)
+                    message = Message.unpack(decrypted_message, self.hmac_key)
+                    if isinstance(message, Message):
+                        if isinstance(message, Command):
+                            if message._code == CommandType.BROADCAST:
+                                reply = Reply(
+                                    ReplyType.SUCCESS,
+                                    (self.ID, self.nickname),
+                                    SERVER_ID,
+                                    message._id,
+                                    ReplyDescription._SUCCESSFULL_RECV
+                                )
+                                self.logger.debug(
+                                    f"Received {message._type.upper()} "\
+                                    f"from {message._from[1]}: "\
+                                    f"Message ID [{message._id}]: "\
+                                    f"{message}"
+                                )
+                                self.chatbox_q.put(message)
+                                self.dispatch_q.put(reply)
+                        elif isinstance(message, Reply):
+                            self.logger.info(
+                                    f"Received {message._type.upper()} "\
+                                    f"from {message._from[1]}: "\
+                                    f"Message ID [{message._id}] "\
+                                    f"{message}"
+                            )
+                except IntegrityCheckFailed:
+                    self.logger.error(ErrorDescription._FAILED_RECV)
+                    self.logger.debug(ErrorDescription._INTEGRITY_FAILURE)
                     reply = Reply(
-                        ReplyType.SUCCESS,
-                        (self.ID, self.nickname),
-                        SERVER_ID,
-                        message._id,
-                        ReplyDescription._SUCCESSFULL_RECV
-                    )
-                    self.logger.debug(
-                        f"Received {message._type.upper()} "\
-                        f"from {message._from[1]}: "\
-                        f"Message ID [{message._id}]: "\
-                        f"{message}"
-                    )
-                    self.chatbox_q.put(message)
+                                ErrorType.UNPACK_ERROR,
+                                (self.ID, self.nickname),
+                                client.ID,
+                                "-",
+                                ReplyDescription._INTEGRITY_FAILURE
+                            )
                     self.dispatch_q.put(reply)
-            elif isinstance(message, Reply):
-                self.logger.debug(
-                        f"Received {message._type.upper()} "\
-                        f"from {message._from[1]}: "\
-                        f"Message ID [{message._id}] "\
-                        f"{message}"
-                )
-        else:
-            raise TypeError("Not a message object.")
+                except UnknownMessageType:
+                    self.logger.error(ErrorDescription._FAILED_RECV)
+                    self.logger.debug(ErrorDescription._UNKNOWN_MSG_TYPE)
+                    reply = Reply(
+                                ErrorType.UNPACK_ERROR,
+                                (self.ID, self.nickname),
+                                client.ID,
+                                "-",
+                                ReplyDescription._UNKNOWN_MSG_TYPE
+                            )
+                    self.dispatch_q.put(reply)
+                except (InvalidDataForEncryption, EncryptionError, TypeError) as e:
+                    self.logger.error(ErrorDescription._FAILED_RECV)
+                    self.logger.debug(e)
+            elif item is QueueSignal._terminate_thread:
+                self.logger.debug("Got terminate signal from the queue.")
+                active.clear()
+            q.task_done()
+        self.logger.debug("Exiting persistence loop.")
 
     def handle_receive(self):
         os_errors_count = 0
+        msg_handler_q = queue.Queue()
+        message_handler_thread = threading.Thread(
+            target=self.handle_incoming_message,
+            args=[msg_handler_q],
+            name=f"{self.ID}_MSGHNDLR",
+            daemon=True
+        )
+        message_handler_thread.start()
         while self.running.is_set():
-            # receive data
             try:
-                buffer = self.receive_buffer(self.socket)
-                decrypted_message = self.crypt.decrypt(
-                    buffer
-                )
-                message = Message.unpack(decrypted_message, self.hmac_key)
-                self.handle_incoming_message(message)
-
+                self.logger.debug("Waiting for message.")
+                buffer = self.receive(self.socket)
+                msg_handler_q.put(buffer)
+                self.logger.debug("Message put into buffer.")
             except ReceiveError as e:
                 if self.running.is_set():
                     self.logger.error(ErrorDescription._FAILED_RECV)
@@ -142,7 +180,6 @@ class Client(NetworkAgent):
                         ErrorDescription._FAILED_RECV
                     )
                     self.dispatch_q.put(reply)
-
             except CriticalTransferError as e:
                 if self.running.is_set():
                     self.logger.error(ErrorDescription._FAILED_RECV)
@@ -154,34 +191,14 @@ class Client(NetworkAgent):
                         )
                     self.disconnect_q.put(QueueSignal._disconnect)
                     time.sleep(0.05)
-
-            except IntegrityCheckFailed:
-                self.logger.error(ErrorDescription._FAILED_RECV)
-                self.logger.debug(ErrorDescription._INTEGRITY_FAILURE)
-                reply = Reply(
-                            ErrorType.UNPACK_ERROR,
-                            (self.ID, self.nickname),
-                            client.ID,
-                            "-",
-                            ReplyDescription._INTEGRITY_FAILURE
-                        )
-                self.dispatch_q.put(reply)
-            except UnknownMessageType:
-                self.logger.error(ErrorDescription._FAILED_RECV)
-                self.logger.debug(ErrorDescription._UNKNOWN_MSG_TYPE)
-                reply = Reply(
-                            ErrorType.UNPACK_ERROR,
-                            (self.ID, self.nickname),
-                            client.ID,
-                            "-",
-                            ReplyDescription._UNKNOWN_MSG_TYPE
-                        )
-                self.dispatch_q.put(reply)
-            except (InvalidDataForEncryption, InvalidRSAKey, TypeError) as e:
-                self.logger.error(ErrorDescription._FAILED_RECV)
-                self.logger.debug(e)
             finally:
                 time.sleep(CLT_RECV_SLEEP_TIME)
+        if not self.running.is_set():
+            self.logger.debug(
+                f"Running flag changed: set -> clear."
+            )
+        self.terminate_thread(message_handler_thread, msg_handler_q)
+        self.logger.debug("Exiting persistence loop.")
     
     def handle_input(self, data: str):
         # this is for development purposes
@@ -202,6 +219,7 @@ class Client(NetworkAgent):
                         (self.ID, self.nickname),
                         data,
                     )
+            self.logger.debug("Enqueued message to dispatch.")
             self.dispatch_q.put(message)
 
     def handle_connect(self, server_ip, server_port):
@@ -344,7 +362,8 @@ class Client(NetworkAgent):
         self.setup_logger()
         self.running.set()
         self.q_listener.start()
-        connection_success = self.handle_connect(SERVER_IP, SERVER_PORT)
+        # connection_success = self.handle_connect(SERVER_IP, SERVER_PORT)
+        connection_success = self.handle_connect("2.80.232.129", SERVER_PORT)
 
         if not connection_success:
             self.logger.info("Exiting...")

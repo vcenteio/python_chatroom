@@ -38,19 +38,16 @@ class CommandType(MessageType):
     DISCONNECT = auto()
     SHUTDOWN = auto()
 
-
 @unique
 class ReplyType(MessageType):
     SUCCESS = auto()
     ERROR = auto()
-
 
 @unique
 class ErrorType(MessageType):
     UNPACK_ERROR = auto()
     RECEIVE_ERROR = auto()
     CONNECTION_LOST = auto()
-
 
 class ReplyDescription():
     _SUCCESSFULL_RECV = "successfully received"
@@ -72,6 +69,7 @@ class ErrorDescription():
     _INTEGRITY_FAILURE = "Integrity check failed."
     _UNKNOWN_MSG_TYPE = "Unknown message type."
     _MSG_UNPACK_ERROR = "error unpacking message"
+    _MSG_DECRYPT_ERROR = "Error while decrypting message."
 
 class QueueSignal(Enum):
     _terminate_thread = auto()
