@@ -20,6 +20,7 @@ class Cryptographer():
         self.private_key = rsa_private_key
         self.public_key = rsa_public_key
         self.fernet_key = fernet_key
+        self.fernet = Fernet(fernet_key)
         self.logger = logger
 
     def encrypt(self, data: bytes) -> bytes:
@@ -27,7 +28,7 @@ class Cryptographer():
             self.logger.debug("Got wrong data.")
             raise InvalidDataForEncryption
         
-        return  Fernet(self.fernet_key).encrypt(
+        return  self.fernet.encrypt(
                     base64.urlsafe_b64encode(
                         self.rsa_encrypt_b(
                             base64.urlsafe_b64encode(data)
@@ -44,7 +45,7 @@ class Cryptographer():
             decrypted_data =  base64.urlsafe_b64decode(
                         self.rsa_decrypt_b(
                             base64.urlsafe_b64decode(
-                                Fernet(self.fernet_key).decrypt(data)
+                                self.fernet.decrypt(data)
                             )
                         )
                     )

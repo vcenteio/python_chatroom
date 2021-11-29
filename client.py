@@ -271,27 +271,61 @@ class Client(NetworkAgent):
     
     def exchange_keys_with_server(self):
         self.logger.debug(
-            "Starting encryption keys exchange with new server."
+            "Starting encryption keys exchange with server."
         )
         self.logger.debug(f"My RSA public key: {self.public_key}")
+
+        # receive temporary fernet key 
+        encapsulated_key = self.receive(self.socket)
+        temp_key  = encapsulated_key[344:388]
+        self.logger.debug(
+            "Received temporary fernet key. "\
+            f"Key = [{temp_key}]"
+        )
+        time.sleep(0.1)
+
         # receive server public key
         self.logger.debug("Waiting for server's RSA public key.")
-        key = self.receive(self.socket).decode().split("-")
+        temp_fernet = Fernet(temp_key)
+        key = base64.urlsafe_b64decode(
+            temp_fernet.decrypt(
+                self.receive(self.socket)
+            )
+        ).decode().split("-")
         server_public_key = (int(key[0]), int(key[1]))
         time.sleep(0.1)
         self.logger.debug(f"Server public key: {server_public_key}")
+
         # send public key to server
-        self.send(
-            self.socket,
-            f"{self.public_key[0]}-{self.public_key[1]}".encode()
+        self.logger.debug("Sending RSA public key to server.")
+        enc_rsa_key = temp_fernet.encrypt(
+            base64.urlsafe_b64encode(
+                f"{self.public_key[0]}-{self.public_key[1]}".encode()
+            )
         )
+        self.send(self.socket, enc_rsa_key)
         time.sleep(0.1)
         self.logger.debug("RSA public key sent.")
+
+        # create temporary crypt object
+        temp_crypt = Cryptographer(
+            self.private_key,
+            server_public_key,
+            temp_key,
+            self.logger
+        )
+
         # receive encrypted fernet key
         self.logger.debug("Waiting for fernet key.")
-        fernet_key = self.receive(self.socket)
-        time.sleep(0.1)
+        fernet_key = temp_crypt.decrypt(self.receive(self.socket))
         self.logger.debug(f"Fernet key: {fernet_key}")
+        time.sleep(0.1)
+
+        # receive encrypted hmac key
+        self.logger.debug("Waiting for HMAC key.")
+        self.hmac_key = temp_crypt.decrypt(self.receive(self.socket))
+        self.logger.debug(f"HMAC key: {self.hmac_key}")
+        time.sleep(0.1)
 
         # create cryptographer object
         self.crypt = Cryptographer(
@@ -301,10 +335,6 @@ class Client(NetworkAgent):
             self.logger 
             )
 
-        self.logger.debug("Waiting for HMAC key.")
-        self.hmac_key = self.receive(self.socket)
-        time.sleep(0.1)
-        self.logger.debug(f"HMAC key: {self.hmac_key}")
         self.logger.debug("Keys exchange terminated.")
     
     def exchange_setup_data_with_server(self):
@@ -362,20 +392,16 @@ class Client(NetworkAgent):
         self.setup_logger()
         self.running.set()
         self.q_listener.start()
-        # connection_success = self.handle_connect(SERVER_IP, SERVER_PORT)
-        connection_success = self.handle_connect("2.80.232.129", SERVER_PORT)
-
+        connection_success = self.handle_connect(SERVER_IP, SERVER_PORT)
         if not connection_success:
             self.logger.info("Exiting...")
             self.running.clear()
             self.q_listener.stop()
             time.sleep(0.2)
             return
-
         self.exchange_keys_with_server()
         self.exchange_setup_data_with_server()
         self.setup_worker_threads()
-
         # wait for disconnect signal
         while self.running.is_set():
             signal = self.disconnect_q.get()
@@ -383,7 +409,7 @@ class Client(NetworkAgent):
                 self.logger.debug("Got a disconnect signal.")
                 self.handle_disconnect()
                 self.logger.info("Disconnected.")
-                time.sleep(1)
+                time.sleep(0.1)
                 self.q_listener.stop()
             else:
                 self.logger.debug("Got a invalid disconnect signal.")
