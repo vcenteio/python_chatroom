@@ -90,9 +90,6 @@ class Server(NetworkAgent):
                         f"content = {message._data}"
                     )
                     self.logger.debug(e)
-                finally:
-                    # time.sleep(SRV_SEND_SLEEP_TIME)
-                    pass
             elif message is QueueSignal._terminate_thread:
                 active.clear()
                 self.logger.debug(
@@ -135,9 +132,6 @@ class Server(NetworkAgent):
                         f"content = {reply._data}"
                     )
                     self.logger.debug(e)
-                finally:
-                    # time.sleep(0.05)
-                    pass
             elif reply == QueueSignal._terminate_thread:
                 active.clear()
                 self.logger.debug(
@@ -187,6 +181,71 @@ class Server(NetworkAgent):
 
             self.dispatch_q.task_done()
         self.logger.debug("Exiting dispatch thread persistence loop.")
+    
+    
+    def handle_broadcast_command(self, command: Command):
+        reply = Reply(
+            ReplyType.SUCCESS,
+            (self._id, self.name),
+            command._from[0],
+            command._id,
+            ReplyDescription._SUCCESSFULL_RECV
+        )
+        self.lock.acquire()
+        self.broadcast_q.put(command)
+        self.reply_q.put(reply)
+        self.lock.release()
+        self.logger.info(
+            f"Broadcast command received from "\
+            f"client with ID [{command._from[0]}], "\
+            f"Message ID = [{command._id}], "\
+            f"Content = '{command._data}'"
+        )
+
+    def handle_query_command(self, command: Command):
+        pass
+
+    def handle_disconnect_command(self, command: Command):
+        self.logger.info(
+            f"Disconnect request received from "\
+            f"client with ID [{command._from[0]}]."
+        )
+        client = self.clients[command._from[0]]
+        self.disconnect_client(client)
+
+    def handle_shutdown_command(self, command: Command):
+        self.logger.info(
+            f"Shutdown command received from "\
+            f"client with ID [{command._from[0]}]."
+            )
+        self.shutdown_q.put(QueueSignal._shutdown)
+
+    def handle_success_reply(self, reply: Reply):
+        #just print the message for now
+        self.logger.info(
+            f"Reply received from client with ID "\
+            f"[{reply._from[0]}], "\
+            f"Message ID = [{reply._message_id}], "\
+            f"Content = '{reply._data}'"
+        )
+
+    def handle_error_reply(self, reply: Reply):
+        #just print the message for now
+        self.logger.info(
+            f"Reply received from client with ID "\
+            f"[{reply._from[0]}], "\
+            f"Message ID = [{reply._message_id}], "\
+            f"Content = '{reply._data}'"
+        )
+
+    message_handlers = {
+        CommandType.BROADCAST : handle_broadcast_command,
+        CommandType.QUERY : handle_query_command,
+        CommandType.DISCONNECT : handle_disconnect_command,
+        CommandType.SHUTDOWN : handle_shutdown_command,
+        ReplyType.SUCCESS : handle_success_reply,
+        ReplyType.ERROR : handle_error_reply
+    }
 
     def handle_incoming_message(self, client: ClientEntry, q: queue.Queue):
         errors_count = 0
@@ -198,51 +257,7 @@ class Server(NetworkAgent):
                 try:
                     decrypted_message = client.crypt.decrypt(item)
                     message = Message.unpack(decrypted_message, self.hmac_key)
-                    if isinstance(message, Message):
-                        #it's a message from the client
-                        if isinstance(message, Command):
-                            if message._code == CommandType.BROADCAST:
-                                reply = Reply(
-                                    ReplyType.SUCCESS,
-                                    (self._id, self.name),
-                                    client.ID,
-                                    message._id,
-                                    ReplyDescription._SUCCESSFULL_RECV
-                                )
-                                self.lock.acquire()
-                                self.broadcast_q.put(message)
-                                self.reply_q.put(reply)
-                                self.lock.release()
-                                self.logger.info(
-                                    f"Broadcast command received from "\
-                                    f"client with ID [{message._from[0]}], "\
-                                    f"Message ID = [{message._id}], "\
-                                    f"Content = '{message._data}'"
-                                )
-                            elif message._code == CommandType.QUERY:
-                                #just print the message for now
-                                print(message)
-                            elif message._code == CommandType.DISCONNECT:
-                                self.logger.info(
-                                    f"Disconnect request received from "\
-                                    f"client with ID [{message._from[0]}]."
-                                )
-                                self.disconnect_client(client)
-                            elif message._code == CommandType.SHUTDOWN:
-                                self.logger.info(
-                                    f"Shutdown command received from "\
-                                    f"client with ID [{message._from[0]}]."
-                                    )
-                                client.active.clear()
-                                self.shutdown_q.put(QueueSignal._shutdown)
-                        elif isinstance(message, Reply):
-                            #just print the message for now
-                            self.logger.info(
-                                f"Reply received from client with ID "\
-                                f"[{message._from[0]}], "\
-                                f"Message ID = [{message._message_id}], "\
-                                f"Content = '{message._data}'"
-                            )
+                    self.message_handlers[message._code](self, message)
                 except UnknownMessageType:
                     self.logger.error(
                         ErrorDescription._UNKNOWN_MSG_TYPE

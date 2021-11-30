@@ -96,31 +96,30 @@ class Client(NetworkAgent):
                 try:
                     decrypted_message = self.crypt.decrypt(item)
                     message = Message.unpack(decrypted_message, self.hmac_key)
-                    if isinstance(message, Message):
-                        if isinstance(message, Command):
-                            if message._code == CommandType.BROADCAST:
-                                reply = Reply(
-                                    ReplyType.SUCCESS,
-                                    (self.ID, self.nickname),
-                                    SERVER_ID,
-                                    message._id,
-                                    ReplyDescription._SUCCESSFULL_RECV
-                                )
-                                self.logger.debug(
-                                    f"Received {message._type.upper()} "\
-                                    f"from {message._from[1]}: "\
-                                    f"Message ID [{message._id}]: "\
-                                    f"{message}"
-                                )
-                                self.chatbox_q.put(message)
-                                self.dispatch_q.put(reply)
-                        elif isinstance(message, Reply):
-                            self.logger.info(
-                                    f"Received {message._type.upper()} "\
-                                    f"from {message._from[1]}: "\
-                                    f"Message ID [{message._id}] "\
-                                    f"{message}"
+                    if isinstance(message, Command):
+                        if message._code == CommandType.BROADCAST:
+                            reply = Reply(
+                                ReplyType.SUCCESS,
+                                (self.ID, self.nickname),
+                                SERVER_ID,
+                                message._id,
+                                ReplyDescription._SUCCESSFULL_RECV
                             )
+                            self.logger.debug(
+                                f"Received {message._type.upper()} "\
+                                f"from {message._from[1]}: "\
+                                f"Message ID [{message._id}]: "\
+                                f"{message}"
+                            )
+                            self.chatbox_q.put(message)
+                            self.dispatch_q.put(reply)
+                    elif isinstance(message, Reply):
+                        self.logger.info(
+                                f"Received {message._type.upper()} "\
+                                f"from {message._from[1]}: "\
+                                f"Message ID [{message._id}] "\
+                                f"{message}"
+                        )
                 except IntegrityCheckFailed:
                     self.logger.error(ErrorDescription._FAILED_RECV)
                     self.logger.debug(ErrorDescription._INTEGRITY_FAILURE)
