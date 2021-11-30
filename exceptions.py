@@ -1,6 +1,5 @@
 ﻿
 
-
 class TransferError(Exception):
     def __init__(self, msg):
         super().__init__(msg)
@@ -52,17 +51,19 @@ class NonBytesData(TypeError):
 
 # unpacking errors
 class MessageUnpackError(Exception):
-    def __init__(self, msg):
-        super().__init__(msg)
+    def __init__(self, msg, *args):
+        super().__init__(msg, *args)
 
 class UnknownMessageType(MessageUnpackError):
-    def __init__(self, msg=None):
-        super().__init__(msg)
+    def __init__(self, msg=None, type=None):
+        self.msg = msg if msg else "Unknown message type."
+        self.type = type
+        super().__init__(self.msg, type)
 
 class IntegrityCheckFailed(MessageUnpackError):
-    def __init__(self):
-        msg = "HMAC integrity check failed."
-        super().__init__(msg)
+    def __init__(self, msg):
+        self.msg = msg if msg else "HMAC integrity check failed."
+        super().__init__(self.msg)
 
 
 # encryption errors

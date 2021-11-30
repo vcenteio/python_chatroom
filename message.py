@@ -68,8 +68,11 @@ class ErrorDescription():
     _LOST_CONNECTION_W_SRV = "Lost connection with the server."
     _INTEGRITY_FAILURE = "Integrity check failed."
     _UNKNOWN_MSG_TYPE = "Unknown message type."
+    _INVALID_MSG_CODE = "Invalid message code."
     _MSG_UNPACK_ERROR = "error unpacking message"
     _MSG_DECRYPT_ERROR = "Error while decrypting message."
+    _ERROR_NO_HANDLER_DEFINED = "An error ocurred for which "\
+                                "there is no defined handler."
 
 class QueueSignal(Enum):
     _terminate_thread = auto()
@@ -89,7 +92,7 @@ class Message():
     def pack(self, hmac_key: bytes):
         serialized = json.dumps(self.__dict__).encode()
         msg_hash = hmac.new(hmac_key, serialized, hashlib.sha256).digest()
-        return msg_hash + serialized
+        return b"".join((msg_hash, serialized))
 
     @staticmethod
     def unpack(buffer: bytes, hmac_key: bytes):
@@ -105,11 +108,14 @@ class Message():
             # there is an error then
             else:
                 raise UnknownMessageType(
-                        Reply.description[Reply._UNKNOWN_MSG_TYPE]
-                    )
+                    f"Message with an invalid type.",
+                    msg_dict['_type']
+                )
         # integrity check failed
         else:
-            raise IntegrityCheckFailed
+            raise IntegrityCheckFailed(
+                ErrorDescription._INTEGRITY_FAILURE
+            )
 
     def __str__(self) -> str:
         return self._data

@@ -216,7 +216,7 @@ class Client(NetworkAgent):
             message = Command(
                         CommandType.BROADCAST,
                         (self.ID, self.nickname),
-                        data,
+                        data
                     )
             self.logger.debug("Enqueued message to dispatch.")
             self.dispatch_q.put(message)

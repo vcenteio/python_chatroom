@@ -22,6 +22,7 @@ class ClientEntry:
         self.crypt = crypt 
         self.active = threading.Event()
         self.thread_id = int()
+        self.errors = 0
         
     def __str__(self):
         return f"({self.nickname}, {self.address})"
@@ -238,6 +239,55 @@ class Server(NetworkAgent):
             f"Content = '{reply._data}'"
         )
 
+    def handle_unknown_message_type(self, e: Exception, c: ClientEntry, *args):
+        self.logger.error(
+            f"{e.__class__.__name__}: "\
+            f"{ErrorDescription._UNKNOWN_MSG_TYPE} "\
+            f"Messagetype = {e.args[1]}"
+        )
+        reply = Reply(
+                    ReplyType.ERROR,
+                    (self._id, self.name),
+                    c.ID,
+                    None,
+                    _data=ErrorDescription._UNKNOWN_MSG_TYPE
+                )
+        self.reply_q.put(reply)
+    
+    def handle_encryption_error(self, e: Exception, c: ClientEntry, *args):
+        self.logger.error(ErrorDescription._MSG_DECRYPT_ERROR)
+        self.logger.debug(e)
+        self.disconnect_client(c)
+
+    def handle_integrity_fail(self, e: Exception, c: ClientEntry, *args):
+        self.logger.error(
+                f"{ErrorDescription._INTEGRITY_FAILURE} "\
+                f"Client ID = [{c.ID}] "
+        )
+        reply = Reply(
+                    ReplyType.ERROR,
+                    (self._id, self.name),
+                    c.ID,
+                    None, 
+                    ReplyDescription._INTEGRITY_FAILURE
+                )
+        self.reply_q.put(reply)
+        c.errors += 1
+        if c.errors > CRITICAL_ERRORS_MAX_NUMBER:
+            self.logger.debug(
+                "Too many integrity errors. "\
+                f"Disconnecting client with ID [{c.ID}]"
+            )
+            self.disconnect_client(c)
+            time.sleep(0.1)
+    
+    def handle_invalid_message_code(self, e: Exception, c: ClientEntry, *args):
+        self.logger.error(
+            ErrorDescription._INVALID_MSG_CODE
+            + f"Message code = {args[1]._code} "\
+            f"Client ID = [{c.ID}]"
+        )
+
     message_handlers = {
         CommandType.BROADCAST : handle_broadcast_command,
         CommandType.QUERY : handle_query_command,
@@ -247,56 +297,37 @@ class Server(NetworkAgent):
         ReplyType.ERROR : handle_error_reply
     }
 
+    error_handlers = {
+        UnknownMessageType.__name__ : handle_unknown_message_type,
+        InvalidDataForEncryption.__name__ : handle_encryption_error,
+        EncryptionError.__name__ : handle_encryption_error,
+        IntegrityCheckFailed.__name__ : handle_integrity_fail,
+        KeyError.__name__ : handle_invalid_message_code
+    }
+
     def handle_incoming_message(self, client: ClientEntry, q: queue.Queue):
-        errors_count = 0
         active = threading.Event()
         active.set()
         while active.is_set():
             item = q.get()
             if isinstance(item, bytes):
+                decrypted_message = None
+                message = None
                 try:
                     decrypted_message = client.crypt.decrypt(item)
                     message = Message.unpack(decrypted_message, self.hmac_key)
                     self.message_handlers[message._code](self, message)
-                except UnknownMessageType:
-                    self.logger.error(
-                        ErrorDescription._UNKNOWN_MSG_TYPE
-                    )
-                    reply = Reply(
-                                ReplyType.ERROR,
-                                (SERVER_ID, self.name),
-                                client.ID,
-                                "-",
-                                ReplyDescription._UNKNOWN_MSG_TYPE
-                            )
-                    self.reply_q.put(reply)
-                except (InvalidDataForEncryption, EncryptionError) as e:
-                    self.logger.error(ErrorDescription._MSG_DECRYPT_ERROR)
-                    self.logger.debug(e)
-                    self.disconnect_client(client)
-                except IntegrityCheckFailed:
-                    self.logger.error(
-                            f"{ErrorDescription._INTEGRITY_FAILURE} "\
-                            f"Client ID = [{client.ID}] "\
-                            f"Client nickname = [{client.nickname}]"
-                    )
-                    reply = Reply(
-                                ReplyType.ERROR,
-                                (SERVER_ID, self.name),
-                                client.ID,
-                                "-",
-                                ReplyDescription._INTEGRITY_FAILURE
-                            )
-                    self.reply_q.put(reply)
-                    errors_count += 1
-                    if errors_count > CRITICAL_ERRORS_MAX_NUMBER:
-                        self.logger.debug(
-                            "Too many integrity errors. "\
-                            f"Disconnecting client with ID [{client.ID}]"
-                        )
-                        self.disconnect_client(client)
-                        active.clear()
-                        time.sleep(0.1)
+                except Exception as e:
+                    try:
+                        err = e.__class__.__name__
+                        args = (decrypted_message, message)
+                        self.error_handlers[err](self, e, client, *args)
+                    except KeyError:
+                        self.logger.error("".join((
+                            ErrorDescription._ERROR_NO_HANDLER_DEFINED,
+                            f" Error class: {err}",
+                            f" Error description: {e}"
+                        )))
             elif item is QueueSignal._terminate_thread:
                 self.logger.debug(
                     "Got terminate signal from the queue. "\
@@ -304,7 +335,9 @@ class Server(NetworkAgent):
                     )
                 active.clear()
             else:
-                self.logger.warning(ErrorDescription._UNKNOWN_MSG_TYPE)
+                self.logger.warning(
+                    f"Got an unexpected item from the queue: {item}"
+                )
             q.task_done()
         self.logger.debug(
             "Exiting persistence loop. "\
