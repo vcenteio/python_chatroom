@@ -8,7 +8,7 @@ class Client(NetworkAgent):
     def __init__(self, nickname: str, color: str):
         super().__init__()
         self.nickname = nickname # client's nickname
-        self.name = self.nickname # for test purposes
+        self.name = "MAIN" # for test purposes
         self.color = color # hex nickname color
         self.dispatch_q = queue.Queue()
         self.chatbox_q = queue.Queue()
@@ -170,6 +170,31 @@ class Client(NetworkAgent):
             ErrorDescription._INVALID_MSG_CODE
             + f"Message code = {args[1]._code} "\
         )
+    
+    def handle_receive_error(self, e: Exception, *args):
+        if self.running.is_set():
+            self.logger.error(ErrorDescription._FAILED_RECV)
+            self.logger.debug(e)
+            reply = Reply(
+                ReplyType.ERROR,
+                (self.ID, self.nickname),
+                SERVER_ID,
+                None,
+                ErrorDescription._FAILED_RECV
+            )
+            self.dispatch_q.put(reply)
+
+    def handle_critical_error(self, e: Exception, *args):
+        if self.running.is_set():
+            self.logger.error(ErrorDescription._FAILED_RECV)
+            self.logger.debug(e)
+        self.errors_count += 1
+        if self.errors_count > CRITICAL_ERRORS_MAX_NUMBER:
+            self.logger.critical(
+                ErrorDescription._LOST_CONNECTION_W_SRV
+            )
+            self.disconnect_q.put(QueueSignal._disconnect)
+            time.sleep(0.05)
 
     message_handlers = {
         CommandType.BROADCAST : handle_broadcast_command,
@@ -185,7 +210,9 @@ class Client(NetworkAgent):
         EncryptionError.__name__ : handle_encryption_error,
         TypeError.__name__ : handle_encryption_error,
         IntegrityCheckFailed.__name__ : handle_integrity_fail,
-        KeyError.__name__ : handle_invalid_message_code
+        KeyError.__name__ : handle_invalid_message_code,
+        ReceiveError.__name__ : handle_receive_error,
+        CriticalTransferError.__name__ : handle_critical_error
     }
 
     def handle_incoming_message(self, q: queue.Queue):
@@ -203,6 +230,7 @@ class Client(NetworkAgent):
                 except Exception as e:
                     try:
                         err = e.__class__.__name__
+                        self.logger.error(f"{err} exception raised. Sending to handler.")
                         args = (decrypted_message, message)
                         self.error_handlers[err](self, e, *args)
                     except KeyError:
@@ -227,34 +255,24 @@ class Client(NetworkAgent):
         )
         message_handler_thread.start()
         while self.running.is_set():
+            buffer = None
             try:
-                self.logger.debug("Waiting for message.")
                 buffer = self.receive(self.socket)
+                self.logger.debug("Message received.")
                 msg_handler_q.put(buffer)
-                self.logger.debug("Message put into buffer.")
-            except ReceiveError as e:
-                if self.running.is_set():
-                    self.logger.error(ErrorDescription._FAILED_RECV)
-                    self.logger.debug(e)
-                    reply = Reply(
-                        ReplyType.ERROR,
-                        (self.ID, self.nickname),
-                        SERVER_ID,
-                        "Unknown",
-                        ErrorDescription._FAILED_RECV
-                    )
-                    self.dispatch_q.put(reply)
-            except CriticalTransferError as e:
-                if self.running.is_set():
-                    self.logger.error(ErrorDescription._FAILED_RECV)
-                    self.logger.debug(e)
-                self.errors_count += 1
-                if self.errors_count > CRITICAL_ERRORS_MAX_NUMBER:
-                    self.logger.critical(
-                        ErrorDescription._LOST_CONNECTION_W_SRV
-                        )
-                    self.disconnect_q.put(QueueSignal._disconnect)
-                    time.sleep(0.05)
+                self.logger.debug("Message put into handler queue.")
+            except Exception as e:
+                try:
+                    err = e.__class__.__name__
+                    self.logger.error(f"{err} exception raised. Sending to handler.")
+                    args = (buffer,)
+                    self.error_handlers[err](self, e, *args)
+                except KeyError:
+                    self.logger.error("".join((
+                        ErrorDescription._ERROR_NO_HANDLER_DEFINED,
+                        f" Error class: {err}",
+                        f" Error description: {e}"
+                    )))
             finally:
                 time.sleep(CLT_RECV_SLEEP_TIME)
         if not self.running.is_set():
@@ -341,7 +359,9 @@ class Client(NetworkAgent):
 
         # receive temporary fernet key 
         encapsulated_key = self.receive(self.socket)
-        temp_key  = encapsulated_key[344:388]
+        temp_key = encapsulated_key[
+            DUMMY_ENCODED_SIZE:DUMMY_ENCODED_SIZE+FERNET_KEY_SIZE
+        ]
         self.logger.debug(
             "Received temporary fernet key. "\
             f"Key = [{temp_key}]"
@@ -397,7 +417,7 @@ class Client(NetworkAgent):
             server_public_key,
             fernet_key,
             self.logger 
-            )
+        )
 
         self.logger.debug("Keys exchange terminated.")
     

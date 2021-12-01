@@ -204,6 +204,7 @@ class Server(NetworkAgent):
         )
 
     def handle_query_command(self, command: Command):
+        # to be implemented
         pass
 
     def handle_disconnect_command(self, command: Command):
@@ -287,6 +288,30 @@ class Server(NetworkAgent):
             + f"Message code = {args[1]._code} "\
             f"Client ID = [{c.ID}]"
         )
+    
+    def handle_receive_error(self, e: Exception, c: ClientEntry, *args):
+        self.logger.error(ErrorDescription._FAILED_RECV)
+        self.logger.debug(e)
+        reply = Reply(
+            ReplyType.ERROR,
+            (self._id, self.name),
+            c.ID,
+            None,
+            ErrorDescription._FAILED_RECV
+        )
+        self.reply_q.put(reply)
+        c.errors_count += 1
+        if c.errors_count > CRITICAL_ERRORS_MAX_NUMBER:
+            self.disconnect_client(c)
+            time.sleep(0.1)
+
+    def handle_critical_error(self, e: Exception, c: ClientEntry, *args):
+        if c.active.is_set():
+            self.logger.error(
+                f"Client with ID [{c.ID}] "\
+                "disconnected unexpectedly."
+            )
+        self.disconnect_client(c)
 
     message_handlers = {
         CommandType.BROADCAST : handle_broadcast_command,
@@ -302,7 +327,9 @@ class Server(NetworkAgent):
         InvalidDataForEncryption.__name__ : handle_encryption_error,
         EncryptionError.__name__ : handle_encryption_error,
         IntegrityCheckFailed.__name__ : handle_integrity_fail,
-        KeyError.__name__ : handle_invalid_message_code
+        KeyError.__name__ : handle_invalid_message_code,
+        ReceiveError.__name__ : handle_receive_error,
+        CriticalTransferError.__name__ : handle_critical_error
     }
 
     def handle_incoming_message(self, client: ClientEntry, q: queue.Queue):
@@ -320,6 +347,7 @@ class Server(NetworkAgent):
                 except Exception as e:
                     try:
                         err = e.__class__.__name__
+                        self.logger.error(f"{err} exception raised. Sending to handler.")
                         args = (decrypted_message, message)
                         self.error_handlers[err](self, e, client, *args)
                     except KeyError:
@@ -354,38 +382,28 @@ class Server(NetworkAgent):
         )
         msg_handler_thread.start()
         while client.active.is_set():
+            buffer = None
             try:
                 buffer = self.receive(client.socket)
                 msg_handler_q.put(buffer)
-            except ReceiveError as e:
-                self.logger.error(ErrorDescription._FAILED_RECV)
-                self.logger.debug(e)
-                reply = Reply(
-                    ReplyType.ERROR,
-                    (self._id, self.name),
-                    client.ID,
-                    "Unknown",
-                    ErrorDescription._FAILED_RECV
-                )
-                self.reply_q.put(reply)
-                client.errors_count += 1
-                if client.errors_count > CRITICAL_ERRORS_MAX_NUMBER:
-                    self.disconnect_client(client)
-                    time.sleep(0.1)
-            except CriticalTransferError as e:
-                if client.active.is_set():
-                    self.logger.error(
-                        f"Client with ID [{client.ID}] "\
-                        "disconnected unexpectedly."
-                    )
-                self.disconnect_client(client)
+            except Exception as e:
+                try:
+                    err = e.__class__.__name__
+                    self.logger.error(f"{err} exception raised. Sending to handler.")
+                    args = (buffer,)
+                    self.error_handlers[err](self, e, client, *args)
+                except KeyError:
+                    self.logger.error("".join((
+                        ErrorDescription._ERROR_NO_HANDLER_DEFINED,
+                        f" Error class: {err}",
+                        f" Error description: {e}"
+                    )))
             finally:
                 time.sleep(SRV_RECV_SLEEP_TIME)
         # stop message handler thread 
-        if not client.active.is_set():
-            self.logger.debug(
-                f"Client active flag changed: set -> clear, "\
-                f"Client ID = [{client.ID}]"
+        self.logger.debug(
+            f"Client active flag changed: set -> clear, "\
+            f"Client ID = [{client.ID}]"
             )
         self.terminate_thread(msg_handler_thread, msg_handler_q)
         time.sleep(0.2)
@@ -401,8 +419,8 @@ class Server(NetworkAgent):
 
         # send an encapuslated temporary fernet key to client
         temp_key = base64.urlsafe_b64encode(secrets.token_bytes(32))
-        prefix = base64.urlsafe_b64encode(secrets.token_bytes(256))
-        sufix = base64.urlsafe_b64encode(secrets.token_bytes(256))
+        prefix = base64.urlsafe_b64encode(secrets.token_bytes(DUMMY_BYTES_SIZE))
+        sufix = base64.urlsafe_b64encode(secrets.token_bytes(DUMMY_BYTES_SIZE))
         encapsulated_key = prefix + temp_key + sufix
         self.logger.debug(
             "Sending temporary fernet key. "\
