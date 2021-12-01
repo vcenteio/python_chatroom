@@ -1,15 +1,16 @@
-﻿from logging import Logger, Formatter, handlers
+﻿from logging import Logger, Formatter, handlers, log
 from queue import Queue
 from constants import *
 
 
 # configure the root logger
 root_logger = logging.getLogger("")
-root_logger.setLevel(LOG_LEVEL)
+root_logger.setLevel(LOG_LEVEL if LOG_LEVEL else logging.INFO)
 
 # configure the general formatter
 formatter = logging.Formatter(
-    "%(asctime)s : %(name)s : %(levelname)s : %(funcName)s : %(message)s"
+    "%(asctime)s | %(name)s | %(levelname)s | %(threadName)s | "\
+    "%(funcName)s | %(message)s"
     )
 
 

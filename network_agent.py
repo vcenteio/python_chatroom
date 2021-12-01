@@ -42,8 +42,6 @@ class NetworkAgent(threading.Thread):
                 self.logger.error(ErrorDescription._FAILED_TO_SEND)
                 self.logger.debug(f"OSError. Description: {e}")
             raise CriticalTransferError
-        
-        return True
 
     def receive_message_lenght(self, s: socket.socket) -> int:
         header = s.recv(HEADER_SIZE)
@@ -55,10 +53,7 @@ class NetworkAgent(threading.Thread):
         else:
             raise EmptyHeader
 
-        if msg_length:
-            return msg_length
-        else:
-            raise NullMessageLength
+        return msg_length
 
     def receive_message_data(self, s: socket.socket, msg_length: int) -> bytes:
         if msg_length:

@@ -22,7 +22,7 @@ class ClientEntry:
         self.crypt = crypt 
         self.active = threading.Event()
         self.thread_id = int()
-        self.errors = 0
+        self.errors_count = 0
         
     def __str__(self):
         return f"({self.nickname}, {self.address})"
@@ -31,7 +31,7 @@ class ClientEntry:
 class Server(NetworkAgent):
     def __init__(self):
         super().__init__()
-        self.name = SERVER_NAME
+        self.name = "SRV_MAIN" 
         self._id = SERVER_ID
         self.clients = dict()
         self.client_threads = dict() 
@@ -43,12 +43,12 @@ class Server(NetworkAgent):
         self.client_id_ctrl_set = set()
     
     def generate_fernet_key(self):
-        self.fernet_key = base64.urlsafe_b64encode(
+        return base64.urlsafe_b64encode(
             secrets.token_bytes(32)
         )
 
     def generate_hmac_key(self):
-        self.hmac_key = secrets.token_bytes(HASH_SIZE)
+        return secrets.token_bytes(HASH_SIZE)
 
     def generate_client_id(self):
         while True:
@@ -272,8 +272,8 @@ class Server(NetworkAgent):
                     ReplyDescription._INTEGRITY_FAILURE
                 )
         self.reply_q.put(reply)
-        c.errors += 1
-        if c.errors > CRITICAL_ERRORS_MAX_NUMBER:
+        c.errors_count += 1
+        if c.errors_count > CRITICAL_ERRORS_MAX_NUMBER:
             self.logger.debug(
                 "Too many integrity errors. "\
                 f"Disconnecting client with ID [{c.ID}]"
@@ -345,7 +345,6 @@ class Server(NetworkAgent):
         )
 
     def handle_client(self, client: ClientEntry):
-        errors_count = 0
         msg_handler_q = queue.Queue()
         msg_handler_thread = threading.Thread(
             target=self.handle_incoming_message,
@@ -369,8 +368,8 @@ class Server(NetworkAgent):
                     ErrorDescription._FAILED_RECV
                 )
                 self.reply_q.put(reply)
-                errors_count += 1
-                if errors_count > CRITICAL_ERRORS_MAX_NUMBER:
+                client.errors_count += 1
+                if client.errors_count > CRITICAL_ERRORS_MAX_NUMBER:
                     self.disconnect_client(client)
                     time.sleep(0.1)
             except CriticalTransferError as e:
@@ -520,11 +519,11 @@ class Server(NetworkAgent):
         new_client_thread = threading.Thread(
             target=self.handle_client,
             args=[new_client],
-            name=new_client.ID
+            name=f"{new_client.ID}_HANDLER"
         )
         # add client's thread to threads list
         self.client_threads.update({
-            int(new_client_thread.name): new_client_thread
+            int(new_client_thread.name.split("_")[0]): new_client_thread
         })
         # start new client's thread
         self.logger.debug(f"Starting client [{new_client.ID}] thread.")
@@ -599,8 +598,8 @@ class Server(NetworkAgent):
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.socket.bind(self.address)
         self.socket.listen()
-        self.generate_fernet_key()
-        self.generate_hmac_key()
+        self.fernet_key = self.generate_fernet_key()
+        self.hmac_key = self.generate_hmac_key()
         self.logger.debug(f"Public key: {self.public_key}")
         self.logger.debug(f"Fernet key: {self.fernet_key}")
         self.logger.debug(f"HMAC key: {self.hmac_key}")
