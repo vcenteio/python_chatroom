@@ -4,3 +4,4 @@ test*.py
 *.out
 *.log
 *.drawio
+*.ico

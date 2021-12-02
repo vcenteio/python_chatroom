@@ -131,11 +131,12 @@ class Command(Message):
     def __init__(
         self, _code: int,
         _from: tuple,
-        _data=None, _id=None, _time=None, _type=None
+        _data=None, _id=None, _time=None, _type=None, _nick_color=None
         ):
         super().__init__(_code, _from, _data, _time)
         self._id = self.generate_id() if _id == None else _id
         self._type = self.TYPE if _type == None else _type
+        self._nick_color = _nick_color
 
     @classmethod
     def generate_id(cls):

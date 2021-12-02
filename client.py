@@ -5,18 +5,21 @@ from cryptographer import Cryptographer
 
 
 class Client(NetworkAgent):
-    def __init__(self, nickname: str, color: str):
+    def __init__(self, nickname: str, color: str, server_address: tuple):
         super().__init__()
         self.nickname = nickname # client's nickname
-        self.name = "MAIN" # for test purposes
+        self.name = self.nickname.upper()
         self.color = color # hex nickname color
-        self.dispatch_q = queue.Queue()
-        self.chatbox_q = queue.Queue()
-        self.disconnect_q = queue.Queue()
-        self.ID = int() # determined by the server later
-        self.server_public_key = tuple() # obtained later
-    
+        self.server_address = server_address
+
+    dispatch_q = queue.Queue()
+    chatbox_q = queue.Queue()
+    disconnect_q = queue.Queue()
+    message_output_q = queue.Queue()
+    ID = int() # determined by the server later
+    server_public_key = tuple() # obtained later
     errors_count = 0
+    connected = False
 
     def write_to_chatbox(self):
         active_thread = threading.Event()
@@ -24,7 +27,10 @@ class Client(NetworkAgent):
         while active_thread.is_set() and self.running.is_set():
             message = self.chatbox_q.get()
             if isinstance(message, Message):
-                #for now just print
+                self.logger.info(
+                    "Putting message into output queue. "\
+                    f"Message = {message}")
+                self.message_output_q.put(message)
                 print(
                     f"****** [CHATBOX] [Message ID: {message._id}]",
                     f"(Client ID: {message._from[0]}) {message._from[1]}:",
@@ -299,10 +305,14 @@ class Client(NetworkAgent):
             message = Command(
                         CommandType.BROADCAST,
                         (self.ID, self.nickname),
-                        data
+                        data.strip(),
+                        _nick_color=self.color
                     )
             self.logger.debug("Enqueued message to dispatch.")
             self.dispatch_q.put(message)
+
+    def is_connected(self):
+        return self.connected
 
     def handle_connect(self, server_ip, server_port):
         self.logger.info("Connecting with the server...")
@@ -311,9 +321,18 @@ class Client(NetworkAgent):
             self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.address = self.socket.connect((server_ip, server_port))
             self.logger.info("Connection with the server stabilished.")
+            self.connected = True
             return True
         except (ConnectionRefusedError, TimeoutError) as e:
             self.logger.info("Could not stabilish connection with the server.")
+            self.logger.debug(f"Description: {e}")
+            return False
+        except OverflowError as e:
+            self.logger.info("Invalid port.")
+            self.logger.debug(f"Description: {e}")
+            return False
+        except socket.gaierror as e:
+            self.logger.info("Invalid IP.")
             self.logger.debug(f"Description: {e}")
             return False
         
@@ -350,6 +369,7 @@ class Client(NetworkAgent):
         self.terminate_thread(self.chatbox_thread, self.chatbox_q)
 
         self.logger.debug("Disconnect process finished.")
+        self.connected = False
     
     def exchange_keys_with_server(self):
         self.logger.debug(
@@ -476,7 +496,10 @@ class Client(NetworkAgent):
         self.setup_logger()
         self.running.set()
         self.q_listener.start()
-        connection_success = self.handle_connect(SERVER_IP, SERVER_PORT)
+        connection_success = self.handle_connect(
+            self.server_address[0],
+            self.server_address[1]
+        )
         if not connection_success:
             self.logger.info("Exiting...")
             self.running.clear()
@@ -501,7 +524,11 @@ class Client(NetworkAgent):
 
 #for test purposes
 if __name__ == "__main__":
-    client = Client(input("Insert nickname: "), "blue")
+    client = Client(
+        input("Insert nickname: "),
+        "blue",
+        (SERVER_IP, SERVER_PORT)
+    )
     client.start()
     time.sleep(1)
 

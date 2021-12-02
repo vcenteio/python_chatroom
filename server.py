@@ -183,7 +183,6 @@ class Server(NetworkAgent):
             self.dispatch_q.task_done()
         self.logger.debug("Exiting dispatch thread persistence loop.")
     
-    
     def handle_broadcast_command(self, command: Command):
         reply = Reply(
             ReplyType.SUCCESS,
