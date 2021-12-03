@@ -53,7 +53,7 @@ class Client(NetworkAgent):
             self.logger.debug("Got an item.")
             if isinstance(message, Message):
                 try:
-                    packed_message = message.pack(self.hmac_key)
+                    packed_message = self.msg_guardian.pack(message)
                     encrypted_message = self.crypt.encrypt(packed_message)
                     if self.can_send_to(self.socket):
                         self.send(self.socket, encrypted_message)
@@ -104,7 +104,7 @@ class Client(NetworkAgent):
             ReplyDescription._SUCCESSFULL_RECV
         )
         self.logger.debug(
-            f"Received {command._type.upper()} "\
+            f"Received command "\
             f"from {command._from[1]}: "\
             f"Message ID [{command._id}]: "\
             f"{command}"
@@ -121,7 +121,7 @@ class Client(NetworkAgent):
 
     def handle_success_reply(self, reply: Reply):
         self.logger.info(
-                f"Received {reply._type.upper()} "\
+                f"Received reply "\
                 f"from {reply._from[1]}: "\
                 f"Message ID [{reply._id}] "\
                 f"{reply}"
@@ -129,7 +129,7 @@ class Client(NetworkAgent):
 
     def handle_error_reply(self, reply: Reply):
         self.logger.info(
-                f"Received {reply._type.upper()} "\
+                f"Received reply "\
                 f"from {reply._from[1]}: "\
                 f"Message ID [{reply._id}] "\
                 f"{reply}"
@@ -231,7 +231,7 @@ class Client(NetworkAgent):
                 message = None
                 try:
                     decrypted_message = self.crypt.decrypt(item)
-                    message = Message.unpack(decrypted_message, self.hmac_key)
+                    message = self.msg_guardian.unpack(decrypted_message)
                     self.message_handlers[message._code](self, message)
                 except Exception as e:
                     try:
@@ -429,6 +429,8 @@ class Client(NetworkAgent):
         self.logger.debug("Waiting for HMAC key.")
         self.hmac_key = temp_crypt.decrypt(self.receive(self.socket))
         self.logger.debug(f"HMAC key: {self.hmac_key}")
+        #create message guardian for pack/unpack
+        self.msg_guardian = MessageGuardian(self.hmac_key)
         time.sleep(0.1)
 
         # create cryptographer object
@@ -463,7 +465,6 @@ class Client(NetworkAgent):
                             self.receive(self.socket)
                         )
                     )[0]
-        Message.CLIENT_ID = self.ID
         self.logger.debug(f"My ID: {self.ID}")
         self.logger.debug("Setup data exchange completed.")
 

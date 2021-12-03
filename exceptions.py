@@ -60,6 +60,10 @@ class UnknownMessageType(MessageUnpackError):
         self.type = type
         super().__init__(self.msg, type)
 
+class MessageWithNoType(MessageUnpackError):
+    def __init__(self, msg: str, msg_dict: dict):
+        super().__init__(msg, msg_dict)
+
 class IntegrityCheckFailed(MessageUnpackError):
     def __init__(self, msg):
         self.msg = msg if msg else "HMAC integrity check failed."

@@ -1,4 +1,5 @@
-﻿import time
+﻿from logging import handlers
+import time
 import sys
 import random
 import struct
@@ -68,6 +69,7 @@ class ErrorDescription():
     _LOST_CONNECTION_W_SRV = "Lost connection with the server."
     _INTEGRITY_FAILURE = "Integrity check failed."
     _UNKNOWN_MSG_TYPE = "Unknown message type."
+    _MSG_W_NO_TYPE = "The passed dictionary has no '_type' key"
     _INVALID_MSG_CODE = "Invalid message code."
     _MSG_UNPACK_ERROR = "error unpacking message"
     _MSG_DECRYPT_ERROR = "Error while decrypting message."
@@ -79,43 +81,14 @@ class QueueSignal(Enum):
     _disconnect = auto()
     _shutdown = auto()
 
-class Message():
 
-    CLIENT_ID = int()
+class Message():
 
     def __init__(self, _code: int, _from: tuple, _data=None, _time=None):
         self._code = _code
         self._from = _from
         self._data = _data
         self._time = time.asctime() if _time == None else _time
-
-    def pack(self, hmac_key: bytes):
-        serialized = json.dumps(self.__dict__).encode()
-        msg_hash = hmac.new(hmac_key, serialized, hashlib.sha256).digest()
-        return b"".join((msg_hash, serialized))
-
-    @staticmethod
-    def unpack(buffer: bytes, hmac_key: bytes):
-        msg_hash = buffer[:HASH_SIZE] 
-        msg_buffer = buffer[HASH_SIZE:] 
-        new_hash = hmac.new(hmac_key, msg_buffer, hashlib.sha256).digest()
-        if msg_hash == new_hash:
-            msg_dict = json.loads(msg_buffer)
-            if msg_dict["_type"] == Command.TYPE:
-                return Command(**msg_dict)
-            elif msg_dict["_type"] == Reply.TYPE:
-                return Reply(**msg_dict)
-            # there is an error then
-            else:
-                raise UnknownMessageType(
-                    f"Message with an invalid type.",
-                    msg_dict['_type']
-                )
-        # integrity check failed
-        else:
-            raise IntegrityCheckFailed(
-                ErrorDescription._INTEGRITY_FAILURE
-            )
 
     def __str__(self) -> str:
         return self._data
@@ -125,7 +98,7 @@ class Message():
 
 
 class Command(Message):
-    TYPE = "command"
+    TYPE = 1
     id_count = 1
 
     def __init__(
@@ -134,20 +107,20 @@ class Command(Message):
         _data=None, _id=None, _time=None, _type=None, _nick_color=None
         ):
         super().__init__(_code, _from, _data, _time)
-        self._id = self.generate_id() if _id == None else _id
+        self._id = self.generate_id(_from[0]) if _id == None else _id
         self._type = self.TYPE if _type == None else _type
         self._nick_color = _nick_color
 
     @classmethod
-    def generate_id(cls):
+    def generate_id(cls, client_id):
         if cls.id_count < 100000:
-            _id = f"#{cls.id_count:05}@{cls.CLIENT_ID}"
+            _id = f"#{cls.id_count:05}@{client_id}"
             cls.id_count += 1
             return _id
 
 
 class Reply(Message):
-    TYPE = "reply"
+    TYPE = 2 
     id_count = 1
 
     def __init__(
@@ -158,7 +131,7 @@ class Reply(Message):
         super().__init__(_code, _from, _data, _time)
         self._id = self.generate_id() if _id == None else _id
         self._to = _to
-        self._message_id = _message_id
+        self._message_id = _message_id #original message id
         self._type = self.TYPE if _type == None else _type
 
     @classmethod
@@ -167,3 +140,57 @@ class Reply(Message):
             _id = f"#{cls.id_count:05}"
             cls.id_count += 1
             return _id
+
+
+class MessageFactory():
+
+    def create_command(msg_dict: dict):
+        return Command(**msg_dict)
+
+    def create_reply(msg_dict: dict):
+        return Reply(**msg_dict)
+
+    type_handlers = {
+        Command.TYPE : create_command,
+        Reply.TYPE : create_reply
+    }
+
+    def create(self, msg_dict: dict):
+        try:
+            _type = msg_dict["_type"]
+        except KeyError as e:
+            raise MessageWithNoType(
+                ErrorDescription._MSG_W_NO_TYPE,
+                msg_dict
+            )
+        try: 
+            return self.type_handlers[_type](msg_dict)
+        except KeyError as e:
+            raise UnknownMessageType(
+                ErrorDescription._UNKNOWN_MSG_TYPE
+                + " " + e
+            )
+
+
+class MessageGuardian():
+    def __init__(self, hmac_key):
+        self.hmac_key: bytes = hmac_key
+    
+    message_factory = MessageFactory()
+
+    def pack(self, message):
+        serialized = json.dumps(message.__dict__).encode()
+        hash = hmac.new(self.hmac_key, serialized, hashlib.sha256).digest()
+        return b"".join((hash, serialized))
+
+    def unpack(self, data: bytes):
+        msg_hash = data[:HASH_SIZE] 
+        msg_buffer = data[HASH_SIZE:] 
+        new_hash = hmac.new(self.hmac_key, msg_buffer, hashlib.sha256).digest()
+        if msg_hash == new_hash:
+            msg_dict = json.loads(msg_buffer)
+            return self.message_factory.create(msg_dict)
+        else:
+            raise IntegrityCheckFailed(
+                ErrorDescription._INTEGRITY_FAILURE
+            )

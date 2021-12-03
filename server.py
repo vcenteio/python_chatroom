@@ -65,7 +65,7 @@ class Server(NetworkAgent):
             message = self.broadcast_q.get()
             if isinstance(message, Command):
                 try:
-                    packed_message = message.pack(self.hmac_key)
+                    packed_message = self.msg_guardian.pack(message)
                     for client in self.clients.values():
                         encrypted_message = client.crypt.encrypt(
                             packed_message
@@ -108,7 +108,7 @@ class Server(NetworkAgent):
             if isinstance(reply, Reply):
                 client = self.clients[reply._to]
                 try:
-                    packed_reply = reply.pack(self.hmac_key)
+                    packed_reply = self.msg_guardian.pack(reply)
                     encrypted_reply = client.crypt.encrypt(
                         packed_reply
                     )
@@ -254,6 +254,10 @@ class Server(NetworkAgent):
                 )
         self.reply_q.put(reply)
     
+    def handle_message_with_no_type(self, e: Exception, c: ClientEntry, *args):
+        self.logger.error(ErrorDescription._MSG_W_NO_TYPE)
+        self.logger.debug(e)
+    
     def handle_encryption_error(self, e: Exception, c: ClientEntry, *args):
         self.logger.error(ErrorDescription._MSG_DECRYPT_ERROR)
         self.logger.debug(e)
@@ -323,6 +327,7 @@ class Server(NetworkAgent):
 
     error_handlers = {
         UnknownMessageType.__name__ : handle_unknown_message_type,
+        MessageWithNoType.__name__ : handle_message_with_no_type,
         InvalidDataForEncryption.__name__ : handle_encryption_error,
         EncryptionError.__name__ : handle_encryption_error,
         IntegrityCheckFailed.__name__ : handle_integrity_fail,
@@ -337,17 +342,19 @@ class Server(NetworkAgent):
         while active.is_set():
             item = q.get()
             if isinstance(item, bytes):
-                decrypted_message = None
+                decrypted_msg = None
                 message = None
                 try:
-                    decrypted_message = client.crypt.decrypt(item)
-                    message = Message.unpack(decrypted_message, self.hmac_key)
+                    decrypted_msg = client.crypt.decrypt(item)
+                    message = self.msg_guardian.unpack(decrypted_msg)
                     self.message_handlers[message._code](self, message)
                 except Exception as e:
                     try:
                         err = e.__class__.__name__
-                        self.logger.error(f"{err} exception raised. Sending to handler.")
-                        args = (decrypted_message, message)
+                        self.logger.error(
+                            f"{err} exception raised. Sending to handler."
+                        )
+                        args = (decrypted_msg, message)
                         self.error_handlers[err](self, e, client, *args)
                     except KeyError:
                         self.logger.error("".join((
@@ -617,6 +624,7 @@ class Server(NetworkAgent):
         self.socket.listen()
         self.fernet_key = self.generate_fernet_key()
         self.hmac_key = self.generate_hmac_key()
+        self.msg_guardian = MessageGuardian(self.hmac_key)
         self.logger.debug(f"Public key: {self.public_key}")
         self.logger.debug(f"Fernet key: {self.fernet_key}")
         self.logger.debug(f"HMAC key: {self.hmac_key}")
