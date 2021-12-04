@@ -64,8 +64,10 @@ class ErrorDescription():
     _FAILED_RECV = "Message could not be received."
     _FAILED_TO_SEND = "Message could not be sent"
     _FAILED_TO_SEND_REPLY = "Reply could not be sent"
+    _FAILED_TO_HANDLE_MSG = "Message could not be handled."
     _MSG_LENGTH_ERROR = "Failed to get message length."
     _FAILED_HEADER = "Failed to prepare header for data."
+    _UNABLE_TO_CONCT_W_SRV = "Could not stabilish connection with the server."
     _LOST_CONNECTION_W_SRV = "Lost connection with the server."
     _INTEGRITY_FAILURE = "Integrity check failed."
     _UNKNOWN_MSG_TYPE = "Unknown message type."
@@ -75,6 +77,7 @@ class ErrorDescription():
     _MSG_DECRYPT_ERROR = "Error while decrypting message."
     _ERROR_NO_HANDLER_DEFINED = "An error ocurred for which "\
                                 "there is no defined handler."
+    _TOO_MANY_ERRORS = "Too many errors occured."
 
 class QueueSignal(Enum):
     _terminate_thread = auto()
@@ -144,10 +147,10 @@ class Reply(Message):
 
 class MessageFactory():
 
-    def create_command(msg_dict: dict):
+    def create_command(msg_dict: dict) -> Command:
         return Command(**msg_dict)
 
-    def create_reply(msg_dict: dict):
+    def create_reply(msg_dict: dict) -> Reply:
         return Reply(**msg_dict)
 
     type_handlers = {
@@ -178,12 +181,12 @@ class MessageGuardian():
     
     message_factory = MessageFactory()
 
-    def pack(self, message):
+    def pack(self, message) -> bytes:
         serialized = json.dumps(message.__dict__).encode()
         hash = hmac.new(self.hmac_key, serialized, hashlib.sha256).digest()
         return b"".join((hash, serialized))
 
-    def unpack(self, data: bytes):
+    def unpack(self, data: bytes) -> Message:
         msg_hash = data[:HASH_SIZE] 
         msg_buffer = data[HASH_SIZE:] 
         new_hash = hmac.new(self.hmac_key, msg_buffer, hashlib.sha256).digest()

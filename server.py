@@ -42,11 +42,6 @@ class Server(NetworkAgent):
         self.lock = threading.Lock()
         self.client_id_ctrl_set = set()
     
-    def generate_fernet_key(self):
-        return base64.urlsafe_b64encode(
-            secrets.token_bytes(32)
-        )
-
     def generate_hmac_key(self):
         return secrets.token_bytes(HASH_SIZE)
 
@@ -61,7 +56,7 @@ class Server(NetworkAgent):
     def broadcast_enqueuer(self):
         active = threading.Event()
         active.set()
-        while active.is_set() and self.running.is_set():
+        while active.is_set() and self.running:
             message = self.broadcast_q.get()
             if isinstance(message, Command):
                 try:
@@ -103,7 +98,7 @@ class Server(NetworkAgent):
     def reply_enqueuer(self):
         active = threading.Event()
         active.set()
-        while active.is_set() and self.running.is_set():
+        while active.is_set() and self.running:
             reply = self.reply_q.get()
             if isinstance(reply, Reply):
                 client = self.clients[reply._to]
@@ -147,7 +142,7 @@ class Server(NetworkAgent):
     def dispatch(self):
         active = threading.Event()
         active.set()
-        while active.is_set() and self.running.is_set():
+        while active.is_set() and self.running:
             item = self.dispatch_q.get()
             if isinstance(item, tuple):
                 data, client = item
@@ -558,7 +553,7 @@ class Server(NetworkAgent):
         return new_client
 
     def handle_connections(self):
-        while self.running.is_set():
+        while self.running:
             self.logger.info("Waiting for connections...")
             try:
                 client_socket, client_address = self.socket.accept()
@@ -575,7 +570,7 @@ class Server(NetworkAgent):
                 self.logger.debug(f"Clients threads: {self.client_threads}")
 
             except (OSError, CriticalTransferError) as e:
-                if self.running.is_set():
+                if self.running:
                     self.logger.info("Could not handle connection request.")
                     self.logger.debug(f"Description: {e}")
 
@@ -622,20 +617,21 @@ class Server(NetworkAgent):
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.socket.bind(self.address)
         self.socket.listen()
-        self.fernet_key = self.generate_fernet_key()
+        self.fernet_key = Cryptographer.generate_fernet_key()
         self.hmac_key = self.generate_hmac_key()
         self.msg_guardian = MessageGuardian(self.hmac_key)
         self.logger.debug(f"Public key: {self.public_key}")
         self.logger.debug(f"Fernet key: {self.fernet_key}")
         self.logger.debug(f"HMAC key: {self.hmac_key}")
-        self.running.set()
+        self.running = True
 
         self.setup_worker_threads()
         # wait for shutdown command from a client thread
-        while self.running.is_set():
+        while self.running:
             signal = self.shutdown_q.get()
             if signal is QueueSignal._shutdown:
                 self.shutdown()
+            self.shutdown_q.task_done()
 
     def disconnect_client(self, client: ClientEntry):
         client.active.clear()
@@ -689,7 +685,7 @@ class Server(NetworkAgent):
     
     def shutdown(self):
         self.logger.info("Server shutting down.")
-        self.running.clear()
+        self.running = False
         time.sleep(2)
         # reconfig logger: queue handler -> direct file and stream handlers
         self.logger.debug("Terminating QueueListener thread.")

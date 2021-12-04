@@ -12,6 +12,7 @@ class Client(NetworkAgent):
         self.color = color # hex nickname color
         self.server_address = server_address
 
+    running: bool
     dispatch_q = queue.Queue()
     chatbox_q = queue.Queue()
     disconnect_q = queue.Queue()
@@ -22,9 +23,8 @@ class Client(NetworkAgent):
     connected = False
 
     def write_to_chatbox(self):
-        active_thread = threading.Event()
-        active_thread.set()
-        while active_thread.is_set() and self.running.is_set():
+        active = True
+        while active:
             message = self.chatbox_q.get()
             if isinstance(message, Message):
                 self.logger.info(
@@ -38,60 +38,40 @@ class Client(NetworkAgent):
                 )
             elif message is QueueSignal._terminate_thread:
                 self.logger.debug("Terminate thread signal received.")
-                active_thread.clear()
+                active = False
             else:
                 self.logger.debug(f"Not a message. Content=[{message}]")
             self.chatbox_q.task_done()
         self.logger.debug("Exiting chatbox_writer thread persistence loop.")
         
+    def prepare_msg_to_dispatch(self, msg):
+        packed_msg = self.msg_guardian.pack(msg)
+        return self.crypt.encrypt(packed_msg)
+
     def dispatch(self):
-        os_errors_count = 0
-        active_thread = threading.Event()
-        active_thread.set()
-        while active_thread.is_set() and self.running.is_set():
+        active = True
+        while active:
             message = self.dispatch_q.get()
-            self.logger.debug("Got an item.")
             if isinstance(message, Message):
+                encrypted_message = None
                 try:
-                    packed_message = self.msg_guardian.pack(message)
-                    encrypted_message = self.crypt.encrypt(packed_message)
-                    if self.can_send_to(self.socket):
-                        self.send(self.socket, encrypted_message)
-                        self.logger.debug(
-                            f"{SuccessDescription._SUCCESSFULL_SEND} "\
-                            f"Class=[{message.__class__.__name__}] "\
-                            f"Type=[{message._code}] "\
-                            f"Content: {message._data}"
-                        )
-                except (NullData, NonBytesData, SendError) as e:
-                        self.logger.debug(
-                            f"{ErrorDescription._FAILED_TO_SEND} "\
-                            f"Message ID = [{message._id}]"
-                        )
-                except (InvalidDataForEncryption, InvalidRSAKey) as e:
-                    self.logger.error("Could not send message.")
-                    self.logger.debug(e)
-                except CriticalTransferError as e:
+                    encrypted_message = self.prepare_msg_to_dispatch(message)
+                    self.send(self.socket, encrypted_message)
+                    self.logger.debug(
+                        f"{SuccessDescription._SUCCESSFULL_SEND} "\
+                        f"Class=[{message.__class__.__name__}] "\
+                        f"Type=[{message._code}] "\
+                        f"Content: {message._data}"
+                    )
+                except Exception as e:
                     self.logger.error(ErrorDescription._FAILED_TO_SEND)
-                    self.logger.debug(e)
-                    os_errors_count += 1
-                    if os_errors_count > CRITICAL_ERRORS_MAX_NUMBER:
-                        self.logger.critical(
-                            ErrorDescription._LOST_CONNECTION_W_SRV
-                            )
-                        self.disconnect_q.put(QueueSignal._disconnect)
-                        time.sleep(0.05)
+                    args = (encrypted_message, message)
+                    self.handle_exceptions(e, *args)
                 finally:
                     time.sleep(CLT_SEND_SLEEP_TIME)
             elif message is QueueSignal._terminate_thread:
                 self.logger.debug("Terminate thread signal received.")
-                active_thread.clear()
-            else:
-                self.logger.debug(
-                    f"{ErrorDescription._UNKNOWN_MSG_TYPE} "\
-                    f"Message = {message} "\
-                    f"type = {type(message)}"
-                    )
+                active = False
             self.dispatch_q.task_done()
         self.logger.debug("Exiting dispatch thread persistence loop.")
 
@@ -120,6 +100,7 @@ class Client(NetworkAgent):
         self.disconnect_q.put(QueueSignal._disconnect)
 
     def handle_success_reply(self, reply: Reply):
+        # success and error behave the same for now
         self.logger.info(
                 f"Received reply "\
                 f"from {reply._from[1]}: "\
@@ -128,6 +109,7 @@ class Client(NetworkAgent):
         )
 
     def handle_error_reply(self, reply: Reply):
+        # success and error behave the same for now
         self.logger.info(
                 f"Received reply "\
                 f"from {reply._from[1]}: "\
@@ -164,7 +146,7 @@ class Client(NetworkAgent):
         self.dispatch_q.put(reply)
 
     def handle_encryption_error(self, e: Exception, *args):
-        self.logger.error(ErrorDescription._FAILED_RECV)
+        self.logger.error(ErrorDescription._MSG_DECRYPT_ERROR)
         self.logger.debug(e)
         self.errors_count += 1
         if self.errors_count > CRITICAL_ERRORS_MAX_NUMBER:
@@ -173,12 +155,18 @@ class Client(NetworkAgent):
 
     def handle_invalid_message_code(self, e: Exception, *args):
         self.logger.error(
-            ErrorDescription._INVALID_MSG_CODE
-            + f"Message code = {args[1]._code} "\
+            f"{ErrorDescription._INVALID_MSG_CODE} "\
+            f"Message code = {args[1]._code} "
         )
-    
+
+    def handle_send_error(self, e: Exception, *args):
+        self.logger.debug(
+            f"{ErrorDescription._FAILED_TO_SEND} "\
+            f"Message ID = [{args[1]._id}] "
+        )
+
     def handle_receive_error(self, e: Exception, *args):
-        if self.running.is_set():
+        if self.running:
             self.logger.error(ErrorDescription._FAILED_RECV)
             self.logger.debug(e)
             reply = Reply(
@@ -190,8 +178,8 @@ class Client(NetworkAgent):
             )
             self.dispatch_q.put(reply)
 
-    def handle_critical_error(self, e: Exception, *args):
-        if self.running.is_set():
+    def handle_critical_receive_error(self, e: Exception, *args):
+        if self.running:
             self.logger.error(ErrorDescription._FAILED_RECV)
             self.logger.debug(e)
         self.errors_count += 1
@@ -202,7 +190,28 @@ class Client(NetworkAgent):
             self.disconnect_q.put(QueueSignal._disconnect)
             time.sleep(0.05)
 
-    message_handlers = {
+    def handle_connect_error(self, e: Exception, *args):
+        ip, port = args
+        self.logger.error(
+            f"{ErrorDescription._UNABLE_TO_CONCT_W_SRV} "\
+            f"Entered address: ({ip}:{port})"
+        )
+        self.logger.debug(f"Description: {e}")
+
+    def handle_no_error_handler(self, e: Exception, *args):
+        self.logger.debug("".join((
+            ErrorDescription._ERROR_NO_HANDLER_DEFINED,
+            f" Error class: {e.__class__.__name__}",
+        )))
+        self.errors_count += 1
+        if self.errors_count > CRITICAL_ERRORS_MAX_NUMBER:
+            self.logger.critical(
+                ErrorDescription._TOO_MANY_ERRORS
+            )
+            self.disconnect_q.put(QueueSignal._disconnect)
+            time.sleep(0.05)
+
+    incoming_msg_handlers = {
         CommandType.BROADCAST : handle_broadcast_command,
         CommandType.QUERY : handle_query_command,
         CommandType.DISCONNECT : handle_disconnect_command,
@@ -217,37 +226,47 @@ class Client(NetworkAgent):
         TypeError.__name__ : handle_encryption_error,
         IntegrityCheckFailed.__name__ : handle_integrity_fail,
         KeyError.__name__ : handle_invalid_message_code,
+        ReceiveError.__name__ : handle_send_error,
         ReceiveError.__name__ : handle_receive_error,
-        CriticalTransferError.__name__ : handle_critical_error
+        CriticalTransferError.__name__ : handle_critical_receive_error,
+        ConnectionRefusedError.__name__ : handle_connect_error,
+        TimeoutError.__name__ : handle_connect_error,
+        OverflowError.__name__ : handle_connect_error,
+        socket.gaierror.__name__ : handle_connect_error,
+        0 : handle_no_error_handler
     }
 
+    def handle_exceptions(self, e: Exception, *args):
+        err = e.__class__.__name__
+        self.logger.debug(
+            f"{err} exception raised. "\
+            f"Sending to handler."
+        )
+        if err in self.error_handlers:
+            self.error_handlers[err](self, e, *args)
+        else:
+            self.error_handlers[0](self, e, *args)
+
+    def prepare_incoming_message(self, message):
+        decrypted_message = self.crypt.decrypt(message)
+        return self.msg_guardian.unpack(decrypted_message)
+
     def handle_incoming_message(self, q: queue.Queue):
-        active = threading.Event()
-        active.set()
-        while active.is_set():
+        active = True
+        while active:
             item = q.get()
-            if isinstance(item, bytes):
-                decrypted_message = None 
-                message = None
-                try:
-                    decrypted_message = self.crypt.decrypt(item)
-                    message = self.msg_guardian.unpack(decrypted_message)
-                    self.message_handlers[message._code](self, message)
-                except Exception as e:
-                    try:
-                        err = e.__class__.__name__
-                        self.logger.error(f"{err} exception raised. Sending to handler.")
-                        args = (decrypted_message, message)
-                        self.error_handlers[err](self, e, *args)
-                    except KeyError:
-                        self.logger.error("".join((
-                            ErrorDescription._ERROR_NO_HANDLER_DEFINED,
-                            f" Error class: {err}",
-                            f" Error description: {e}"
-                        )))
-            elif item is QueueSignal._terminate_thread:
-                self.logger.debug("Got terminate signal from the queue.")
-                active.clear()
+            decrypted_message = message = None 
+            try:
+                message = self.prepare_incoming_message(item)
+                self.incoming_msg_handlers[message._code](self, message)
+            except Exception as e:
+                if item is QueueSignal._terminate_thread:
+                    self.logger.debug("Got terminate signal from the queue.")
+                    active = False
+                else:
+                    self.logger.error(ErrorDescription._FAILED_TO_HANDLE_MSG)
+                    args = (decrypted_message, message)
+                    self.handle_exceptions(e, *args)
             q.task_done()
         self.logger.debug("Exiting persistence loop.")
 
@@ -260,28 +279,17 @@ class Client(NetworkAgent):
             daemon=True
         )
         message_handler_thread.start()
-        while self.running.is_set():
+        while self.running:
             buffer = None
             try:
                 buffer = self.receive(self.socket)
-                self.logger.debug("Message received.")
                 msg_handler_q.put(buffer)
                 self.logger.debug("Message put into handler queue.")
             except Exception as e:
-                try:
-                    err = e.__class__.__name__
-                    self.logger.error(f"{err} exception raised. Sending to handler.")
-                    args = (buffer,)
-                    self.error_handlers[err](self, e, *args)
-                except KeyError:
-                    self.logger.error("".join((
-                        ErrorDescription._ERROR_NO_HANDLER_DEFINED,
-                        f" Error class: {err}",
-                        f" Error description: {e}"
-                    )))
-            finally:
-                time.sleep(CLT_RECV_SLEEP_TIME)
-        if not self.running.is_set():
+                self.logger.debug(ErrorDescription._FAILED_RECV)
+                args = (buffer,)
+                self.handle_exceptions(e, *args)
+        if not self.running:
             self.logger.debug(
                 f"Running flag changed: set -> clear."
             )
@@ -323,22 +331,13 @@ class Client(NetworkAgent):
             self.logger.info("Connection with the server stabilished.")
             self.connected = True
             return True
-        except (ConnectionRefusedError, TimeoutError) as e:
-            self.logger.info("Could not stabilish connection with the server.")
-            self.logger.debug(f"Description: {e}")
-            return False
-        except OverflowError as e:
-            self.logger.info("Invalid port.")
-            self.logger.debug(f"Description: {e}")
-            return False
-        except socket.gaierror as e:
-            self.logger.info("Invalid IP.")
-            self.logger.debug(f"Description: {e}")
+        except Exception as e:
+            self.handle_exceptions(e, server_ip, server_port)
             return False
         
     def handle_disconnect(self):
         self.logger.info("Disconnecting...")
-        self.running.clear()
+        self.running = False
         self.logger.debug("Running flag changed: set -> clear.")
         # send disconnect command to server
         self.logger.debug("Sending disconnect command to server.")
@@ -347,26 +346,18 @@ class Client(NetworkAgent):
                     (self.ID, self.nickname),
                 )
         self.dispatch_q.put(disconnect_cmd)
-        try:
-            self.dispatch_thread.join()
-            self.logger.debug("Dispatcher thread terminated.")
-        except RuntimeError:
-            # The running flag is cleared at this point,
-            # so, after dispatching the disconnect command above,
-            # the dispatcher thread will hopefully terminate.
-            # But in case it does not terminate,
-            # run the following procedure.
-            self.logger.debug(
-                "Dispatcher thread did not terminate as expected."
-            )
-            self.terminate_thread(self.dispatch_thread, self.dispatch_q)
-        # close socket
+        # terminate dispatcher thread
+        self.terminate_thread(self.dispatch_thread, self.dispatch_q)
         time.sleep(0.5)
+        self.logger.debug(threading.enumerate())
+        # close socket
         self.close_socket(self.socket)
         # terminate receiver thread
         self.terminate_thread(self.receive_thread)
+        self.logger.debug(threading.enumerate())
         # terminate chatbox writer thread
         self.terminate_thread(self.chatbox_thread, self.chatbox_q)
+        self.logger.debug(threading.enumerate())
 
         self.logger.debug("Disconnect process finished.")
         self.connected = False
@@ -495,7 +486,7 @@ class Client(NetworkAgent):
 
     def run(self):
         self.setup_logger()
-        self.running.set()
+        self.running = True
         self.q_listener.start()
         connection_success = self.handle_connect(
             self.server_address[0],
@@ -503,7 +494,7 @@ class Client(NetworkAgent):
         )
         if not connection_success:
             self.logger.info("Exiting...")
-            self.running.clear()
+            self.running = False
             self.q_listener.stop()
             time.sleep(0.2)
             return
@@ -511,7 +502,7 @@ class Client(NetworkAgent):
         self.exchange_setup_data_with_server()
         self.setup_worker_threads()
         # wait for disconnect signal
-        while self.running.is_set():
+        while self.running:
             signal = self.disconnect_q.get()
             if signal is QueueSignal._disconnect:
                 self.logger.debug("Got a disconnect signal.")
@@ -521,6 +512,7 @@ class Client(NetworkAgent):
                 self.q_listener.stop()
             else:
                 self.logger.debug("Got a invalid disconnect signal.")
+            self.disconnect_q.task_done()
 
 
 #for test purposes
@@ -533,7 +525,7 @@ if __name__ == "__main__":
     client.start()
     time.sleep(1)
 
-    while client.running.is_set():
+    while client.running:
         client.logger.debug("Waiting for input.")
         msg = input("> ")
         client.handle_input(msg.rstrip())

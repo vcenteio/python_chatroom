@@ -45,8 +45,8 @@ class NullData(ValueError):
         super().__init__(self.msg)
 
 class NonBytesData(TypeError):
-    def __init__(self, type):
-        self.msg = f"Wrong type for data argument: ({type}). Should be bytes."
+    def __init__(self, msg, type):
+        self.msg = msg if msg else f"Wrong type: ({type}). Should be bytes."
         super().__init__(self.msg)
 
 # unpacking errors
@@ -76,8 +76,8 @@ class EncryptionError(ValueError):
         super().__init__(msg)
 
 class InvalidDataForEncryption(EncryptionError):
-    def __init__(self):
-        self.msg = "Wrong value passed as argument."
+    def __init__(self, msg):
+        self.msg = msg if msg else "Wrong value for encryption/decryption."
         super().__init__(self.msg)
 
 class InvalidRSAKey(EncryptionError):

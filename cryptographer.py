@@ -8,6 +8,7 @@ from cryptography.exceptions import *
 import base64
 import random
 import math
+import secrets
 
 class Cryptographer():
     def __init__(
@@ -24,35 +25,20 @@ class Cryptographer():
         self.logger = logger
 
     def encrypt(self, data: bytes) -> bytes:
-        if data == False or data == None:
-            self.logger.debug("Got wrong data.")
-            raise InvalidDataForEncryption
-        
-        return  self.fernet.encrypt(
-                    base64.urlsafe_b64encode(
-                        self.rsa_encrypt_b(
-                            base64.urlsafe_b64encode(data)
-                        )
-                    )
-                )
+        return self.fernet.encrypt(self.rsa_encrypt_b(data))
 
     def decrypt(self, data: bytes) -> bytes:
-        if data == False or data == None:
-            self.logger.debug("Got wrong data.")
-            raise InvalidDataForEncryption
-
         try:
-            decrypted_data =  base64.urlsafe_b64decode(
-                        self.rsa_decrypt_b(
-                            base64.urlsafe_b64decode(
-                                self.fernet.decrypt(data)
-                            )
-                        )
-                    )
-            return decrypted_data
+            return self.rsa_decrypt_b(self.fernet.decrypt(data))
         except (InvalidToken, InvalidSignature) as e:
             self.logger.debug(e)
-            raise EncryptionError("Invalid Fernet token.")
+            raise EncryptionError(e)
+
+    @classmethod
+    def generate_fernet_key(self):
+        return base64.urlsafe_b64encode(
+            secrets.token_bytes(32)
+        )
 
     @classmethod
     def generate_rsa_keys(cls):
@@ -112,24 +98,20 @@ class Cryptographer():
         return "".join(decrypted_s)
     
     def rsa_encrypt_b(self, s: bytes) -> bytes:
-        DEBUG = 0
+        s = base64.urlsafe_b64encode(s)
         encrypted_s = []
         e, N = self.public_key
-        if DEBUG: print(f'DEGUB: e: {e} {type(e)}, N: {N} {type(N)}')
         for l in s:
             enc_l = (l ** e) % N
             encrypted_s.append(struct.pack("<d", enc_l))
-        return BYTES_SEPARATOR.join(encrypted_s)
+        return base64.urlsafe_b64encode(BYTES_SEPARATOR.join(encrypted_s))
 
     def rsa_decrypt_b(self, s: bytes) -> bytes:
-        DEBUG = 0
-        s = s.split(BYTES_SEPARATOR)
+        s = base64.urlsafe_b64decode(s).split(BYTES_SEPARATOR)
         decrypted_s = []
         d, N = self.private_key 
-        if DEBUG: print(f'DEGUB: d: {d} {type(d)}, N: {N} {type(N)}')
         for l in s:
-            if DEBUG: print(l)
             l_int = int(struct.unpack("<d", l)[0])
             dec_l = (l_int ** d) % N
             decrypted_s.append(dec_l.to_bytes(1, "little"))
-        return b"".join(decrypted_s)
+        return base64.urlsafe_b64decode(b"".join(decrypted_s))

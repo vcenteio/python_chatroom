@@ -8,14 +8,13 @@ import logger
 
 
 class NetworkAgent(threading.Thread):
-    def __init__(self):
-        super().__init__()
-        self.address = tuple()
-        self.running = threading.Event()
-        self.public_key, self.private_key = Cryptographer.generate_rsa_keys()
-        self.fernet_key = b""
-        self.hmac_key = b""
-        self.logging_q = queue.Queue()
+    address = tuple()
+    # running = threading.Event()
+    public_key, private_key = Cryptographer.generate_rsa_keys()
+    running: bool
+    fernet_key: bytes 
+    hmac_key: bytes
+    logging_q = queue.Queue()
 
     def send(self, s: socket.socket, data: bytes) -> bool:
         """
@@ -30,7 +29,7 @@ class NetworkAgent(threading.Thread):
         try:
             header = struct.pack(HEADER_FORMAT, len(data))
         except struct.error as e:
-            if self.running.is_set():
+            if self.running:
                 self.logger.error(ErrorDescription._FAILED_HEADER)
                 self.logger.debug(f"Struct error. Description: {e}")
             raise SendError
@@ -38,7 +37,7 @@ class NetworkAgent(threading.Thread):
         try:
             s.sendall(header + data)
         except (OSError, ConnectionError) as e:
-            if self.running.is_set():
+            if self.running:
                 self.logger.error(ErrorDescription._FAILED_TO_SEND)
                 self.logger.debug(f"OSError. Description: {e}")
             raise CriticalTransferError
@@ -73,17 +72,17 @@ class NetworkAgent(threading.Thread):
             message_data = self.receive_message_data(s, msg_length)
             return message_data
         except (EmptyHeader, NullMessageLength) as e:
-            if self.running.is_set():
+            if self.running:
                 self.logger.error(ErrorDescription._FAILED_RECV)
                 self.logger.debug(e)
             raise ReceiveError(e)
         except struct.error as e:
-            if self.running.is_set():
+            if self.running:
                 self.logger.error(ErrorDescription._MSG_LENGTH_ERROR)
                 self.logger.debug(f"Struct error. Description: {e}")
             raise ReceiveError
         except (OSError, ConnectionError) as e:
-            if self.running.is_set():
+            if self.running:
                 self.logger.error(ErrorDescription._FAILED_RECV)
                 self.logger.debug(f"OSError. Description: {e}")
             raise CriticalTransferError
