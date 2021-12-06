@@ -1,4 +1,4 @@
-﻿from logging import handlers
+﻿from logging import LogRecord, handlers
 from cryptography.fernet import InvalidToken
 from cryptography.fernet import Fernet
 from cryptography.exceptions import *
@@ -8,12 +8,11 @@ import logger
 
 
 class NetworkAgent(threading.Thread):
-    address = tuple()
-    # running = threading.Event()
-    public_key, private_key = Cryptographer.generate_rsa_keys()
+    address: tuple 
     running: bool
     fernet_key: bytes 
     hmac_key: bytes
+    public_key, private_key = Cryptographer.generate_rsa_keys()
     logging_q = queue.Queue()
 
     def send(self, s: socket.socket, data: bytes) -> bool:
@@ -39,7 +38,7 @@ class NetworkAgent(threading.Thread):
         except (OSError, ConnectionError) as e:
             if self.running:
                 self.logger.error(ErrorDescription._FAILED_TO_SEND)
-                self.logger.debug(f"OSError. Description: {e}")
+                self.logger.debug(f"Description: {e}")
             raise CriticalTransferError
 
     def receive_message_lenght(self, s: socket.socket) -> int:
@@ -74,18 +73,15 @@ class NetworkAgent(threading.Thread):
         except (EmptyHeader, NullMessageLength) as e:
             if self.running:
                 self.logger.error(ErrorDescription._FAILED_RECV)
-                self.logger.debug(e)
             raise ReceiveError(e)
         except struct.error as e:
             if self.running:
                 self.logger.error(ErrorDescription._MSG_LENGTH_ERROR)
-                self.logger.debug(f"Struct error. Description: {e}")
-            raise ReceiveError
+            raise ReceiveError(e)
         except (OSError, ConnectionError) as e:
             if self.running:
                 self.logger.error(ErrorDescription._FAILED_RECV)
-                self.logger.debug(f"OSError. Description: {e}")
-            raise CriticalTransferError
+            raise CriticalTransferError(e)
         
     @staticmethod
     def can_receive_from(s: socket.socket) -> bool:
@@ -97,17 +93,35 @@ class NetworkAgent(threading.Thread):
         _, writeable, _ = select.select((), (s,), (), 0.5)
         return True if s in writeable else False
 
+    def exception_filter(self, record: LogRecord):
+        if "Traceback" in record.msg:
+            return False
+        return True
+
     def setup_logger(self):
         self.logger = logger.get_new_logger(self.name)
         self.logger.addHandler(
             handlers.QueueHandler(self.logging_q)
         )
+        stream_handler = logger.get_stream_handler()
+        stream_handler.addFilter(self.exception_filter)
+        file_handler = logger.get_file_handler(self.name)
         self.q_listener = handlers.QueueListener(
             self.logging_q,
-            logger.get_stream_handler(),
-            logger.get_file_handler(self.name)
+            stream_handler,
+            file_handler
         )
         self.q_listener.respect_handler_level = True
+
+    def consume_queue(self, q: queue.Queue, thread_name):
+        try:
+            while not q.empty:
+                _ = q.get()
+                self.logger.debug(f"Queue item: {_}")
+                q.task_done()
+        except queue.Empty:
+            pass
+        self.logger.debug(f"{thread_name} queue consumed.")
 
     def terminate_thread(self, t: threading.Thread, q: queue.Queue = None):
         thread_name = t.name.lower()
@@ -115,9 +129,13 @@ class NetworkAgent(threading.Thread):
             if t.is_alive():
                 self.logger.debug(f"Sent terminate command to {t.name.lower()} queue.")
                 q.put(QueueSignal._terminate_thread) 
-            self.logger.debug(f"Joining {thread_name} queue.")
-            q.join()
-            self.logger.debug(f"{thread_name} queue joined.")
+                time.sleep(0.3)
+                self.logger.debug(f"Joining {thread_name} queue.")
+                if q.unfinished_tasks:
+                    self.logger.debug(f"Unfinished tasks: {q.unfinished_tasks}")
+                    self.consume_queue(q, thread_name)
+                q.join()
+                self.logger.debug(f"{thread_name} queue joined.")
         if t.is_alive():
             try:
                 self.logger.debug(f"Joining {thread_name} thread.")

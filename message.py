@@ -12,6 +12,7 @@ import base64
 import math
 import hmac
 import select
+import secrets
 from cryptography.fernet import Fernet
 from constants import *
 from exceptions import *
@@ -68,11 +69,13 @@ class ErrorDescription():
     _MSG_LENGTH_ERROR = "Failed to get message length."
     _FAILED_HEADER = "Failed to prepare header for data."
     _UNABLE_TO_CONCT_W_SRV = "Could not stabilish connection with the server."
+    _CONNECTION_REQUEST_FAILED = "Could not handle connection request."
     _LOST_CONNECTION_W_SRV = "Lost connection with the server."
     _INTEGRITY_FAILURE = "Integrity check failed."
     _UNKNOWN_MSG_TYPE = "Unknown message type."
     _MSG_W_NO_TYPE = "The passed dictionary has no '_type' key"
     _INVALID_MSG_CODE = "Invalid message code."
+    _MSG_PACK_ERROR = "Failed to pack message."
     _MSG_UNPACK_ERROR = "error unpacking message"
     _MSG_DECRYPT_ERROR = "Error while decrypting message."
     _ERROR_NO_HANDLER_DEFINED = "An error ocurred for which "\
@@ -181,8 +184,11 @@ class MessageGuardian():
     
     message_factory = MessageFactory()
 
-    def pack(self, message) -> bytes:
-        serialized = json.dumps(message.__dict__).encode()
+    def pack(self, message: Message) -> bytes:
+        try:
+            serialized = json.dumps(message.__dict__).encode()
+        except AttributeError as e:
+            raise MessagePackError(e)
         hash = hmac.new(self.hmac_key, serialized, hashlib.sha256).digest()
         return b"".join((hash, serialized))
 
@@ -197,3 +203,7 @@ class MessageGuardian():
             raise IntegrityCheckFailed(
                 ErrorDescription._INTEGRITY_FAILURE
             )
+
+    @classmethod    
+    def generate_hmac_key(cls):
+        return secrets.token_bytes(HASH_SIZE)

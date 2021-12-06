@@ -30,8 +30,8 @@ class EmptyHeader(ValueError):
         super().__init__(self.msg)
     
 class CriticalTransferError(TransferError):
-    def __init__(self):
-        self.msg = "Socket connection broken."
+    def __init__(self, msg):
+        self.msg = msg if msg else "Socket connection broken."
         super().__init__(self.msg)
 
 class NullMessageLength(ValueError):
@@ -49,7 +49,7 @@ class NonBytesData(TypeError):
         self.msg = msg if msg else f"Wrong type: ({type}). Should be bytes."
         super().__init__(self.msg)
 
-# unpacking errors
+# pack/unpack errors
 class MessageUnpackError(Exception):
     def __init__(self, msg, *args):
         super().__init__(msg, *args)
@@ -67,6 +67,11 @@ class MessageWithNoType(MessageUnpackError):
 class IntegrityCheckFailed(MessageUnpackError):
     def __init__(self, msg):
         self.msg = msg if msg else "HMAC integrity check failed."
+        super().__init__(self.msg)
+
+class MessagePackError(Exception):
+    def __init__(self, msg):
+        self.msg = msg if msg else "Unable to pack message."
         super().__init__(self.msg)
 
 

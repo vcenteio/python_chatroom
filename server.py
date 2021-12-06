@@ -4,7 +4,6 @@ from message import *
 from constants import *
 from network_agent import NetworkAgent
 from cryptographer import Cryptographer
-import os
 import logger
 
 
@@ -20,9 +19,10 @@ class ClientEntry:
         self.color = color
         self.ID = _id
         self.crypt = crypt 
-        self.active = threading.Event()
-        self.thread_id = int()
-        self.errors_count = 0
+
+    active: bool
+    thread_id: int
+    errors_count = 0
         
     def __str__(self):
         return f"({self.nickname}, {self.address})"
@@ -42,9 +42,6 @@ class Server(NetworkAgent):
         self.lock = threading.Lock()
         self.client_id_ctrl_set = set()
     
-    def generate_hmac_key(self):
-        return secrets.token_bytes(HASH_SIZE)
-
     def generate_client_id(self):
         while True:
             rand = random.randint(100000, 200000)
@@ -54,11 +51,12 @@ class Server(NetworkAgent):
         return rand
 
     def broadcast_enqueuer(self):
-        active = threading.Event()
-        active.set()
-        while active.is_set() and self.running:
+        active = True
+        while active and self.running:
             message = self.broadcast_q.get()
             if isinstance(message, Command):
+                packed_message = None
+                client = None
                 try:
                     packed_message = self.msg_guardian.pack(message)
                     for client in self.clients.values():
@@ -68,26 +66,24 @@ class Server(NetworkAgent):
                         self.logger.debug(
                             "Putting command into dispatch queue."
                             )
-                        self.lock.acquire()
                         self.dispatch_q.put((
                             encrypted_message,
                             client 
                         ))
-                        self.lock.release()
-                except (
-                    InvalidDataForEncryption,
-                    InvalidRSAKey,
-                    NullData,
-                    NonBytesData
-                    ) as e:
+                except Exception as e:
                     self.logger.error(
                         f"{ErrorDescription._FAILED_TO_SEND} "\
-                        f"to client with ID [{client.ID}]. "\
+                        f"to client #[{client.ID if client else None}]. "\
                         f"content = {message._data}"
                     )
-                    self.logger.debug(e)
+                    self.handle_exceptions(
+                        e,
+                        client if client else None,
+                        message,
+                        packed_message if packed_message else None
+                    )
             elif message is QueueSignal._terminate_thread:
-                active.clear()
+                active = False
                 self.logger.debug(
                     "Got terminate thread signal; "\
                         "active flag: set -> clear"
@@ -96,13 +92,14 @@ class Server(NetworkAgent):
         self.logger.debug("Exiting broadcast thread persistence loop.")
                 
     def reply_enqueuer(self):
-        active = threading.Event()
-        active.set()
-        while active.is_set() and self.running:
+        active = True
+        while active and self.running:
             reply = self.reply_q.get()
             if isinstance(reply, Reply):
-                client = self.clients[reply._to]
+                packed_reply = None
+                encrypted_reply = None
                 try:
+                    client = self.clients[reply._to]
                     packed_reply = self.msg_guardian.pack(reply)
                     encrypted_reply = client.crypt.encrypt(
                         packed_reply
@@ -110,71 +107,58 @@ class Server(NetworkAgent):
                     self.logger.debug(
                         "Putting reply into dispatch queue."
                     )
-                    self.lock.acquire()
                     self.dispatch_q.put((
                         encrypted_reply,
                         client
                     ))
-                    self.lock.release()
-                except (
-                    InvalidDataForEncryption,
-                    InvalidRSAKey,
-                    NullData,
-                    NonBytesData
-                    ) as e:
+                except Exception as e:
                     self.logger.error(
                         f"{ErrorDescription._FAILED_TO_SEND_REPLY} "\
-                        f"to client with ID [{client.ID}]. "\
-                        f"content = {reply._data}"
+                        f"to client #[{client.ID if client else None}]. "\
+                        f"content = {reply._data if reply else None}"
                     )
-                    self.logger.debug(e)
-            elif reply == QueueSignal._terminate_thread:
-                active.clear()
+                    self.handle_exceptions(
+                        e,
+                        client if client else None,
+                        reply,
+                        packed_reply if packed_reply else None
+                    )
+            elif reply is QueueSignal._terminate_thread:
+                active = False
                 self.logger.debug(
                     "Got terminate thread signal; "\
                         "active flag: set -> clear"
                     )
-            else:
-                self.logger.debug("Item's type is not Reply.")
             self.reply_q.task_done()
         self.logger.debug("Exiting reply thread persistence loop.")
 
     def dispatch(self):
-        active = threading.Event()
-        active.set()
-        while active.is_set() and self.running:
+        active = True
+        while active and self.running:
             item = self.dispatch_q.get()
             if isinstance(item, tuple):
                 data, client = item
                 if isinstance(data, bytes) \
                     and isinstance(client, ClientEntry):
+                    self.logger.debug("Sending data.")
                     try:
-                        self.logger.debug("Sending data.")
                         self.send(client.socket, data)
-                    except SendError as e:
+                    except Exception as e:
                         self.logger.error(
                             f"{ErrorDescription._FAILED_TO_SEND} "\
                             f"to client with ID [{client.ID}]."
                         )
-                        self.logger.debug(e)
-                    except CriticalTransferError as e:
-                        self.logger.error(
-                            f"Client with ID [{client.ID}] "\
-                            "disconnected."
-                        )
-                        self.logger.debug(e)
-                        self.disconnect_client(client)
+                        self.handle_exceptions(e, client, data)
                     finally:
                         time.sleep(SRV_SEND_SLEEP_TIME)
                 else:
                     self.logger.debug(f"Item is not valid. Item = {item}")
             elif item is QueueSignal._terminate_thread:
-                active.clear()
+                active = False
                 self.logger.debug(
                     "Got terminate thread signal; "\
                         "active flag: set -> clear"
                     )
-
             self.dispatch_q.task_done()
         self.logger.debug("Exiting dispatch thread persistence loop.")
     
@@ -186,10 +170,8 @@ class Server(NetworkAgent):
             command._id,
             ReplyDescription._SUCCESSFULL_RECV
         )
-        self.lock.acquire()
         self.broadcast_q.put(command)
         self.reply_q.put(reply)
-        self.lock.release()
         self.logger.info(
             f"Broadcast command received from "\
             f"client with ID [{command._from[0]}], "\
@@ -234,6 +216,14 @@ class Server(NetworkAgent):
             f"Content = '{reply._data}'"
         )
 
+    def handle_pack_error(self, e: Exception, c: ClientEntry, *args):
+        message = args[0]
+        self.logger.error(
+            f"{ErrorDescription._MSG_PACK_ERROR} "\
+            f"Message = {message} "\
+            f"Description: {e}"
+        )
+
     def handle_unknown_message_type(self, e: Exception, c: ClientEntry, *args):
         self.logger.error(
             f"{e.__class__.__name__}: "\
@@ -256,7 +246,15 @@ class Server(NetworkAgent):
     def handle_encryption_error(self, e: Exception, c: ClientEntry, *args):
         self.logger.error(ErrorDescription._MSG_DECRYPT_ERROR)
         self.logger.debug(e)
-        self.disconnect_client(c)
+        if c:
+            c.errors_count += 1
+            if c.errors_count > CRITICAL_ERRORS_MAX_NUMBER:
+                self.logger.debug(
+                    "Too many encryption errors. "\
+                    f"Disconnecting client with ID [{c.ID}]"
+                )
+                self.disconnect_client(c)
+                time.sleep(0.1)
 
     def handle_integrity_fail(self, e: Exception, c: ClientEntry, *args):
         self.logger.error(
@@ -282,9 +280,17 @@ class Server(NetworkAgent):
     
     def handle_invalid_message_code(self, e: Exception, c: ClientEntry, *args):
         self.logger.error(
-            ErrorDescription._INVALID_MSG_CODE
-            + f"Message code = {args[1]._code} "\
+            f"{ErrorDescription._INVALID_MSG_CODE} "\
+            f"Message code = {args[1]._code} "\
             f"Client ID = [{c.ID}]"
+        )
+
+    def handle_send_error(self, e: Exception, c: ClientEntry, *args):
+        message = args[0]
+        self.logger.debug(
+            f"Could not send message '{message}', "\
+            f"Client ID [{c.ID}], "\
+            f"Description: {e}"
         )
     
     def handle_receive_error(self, e: Exception, c: ClientEntry, *args):
@@ -300,16 +306,37 @@ class Server(NetworkAgent):
         self.reply_q.put(reply)
         c.errors_count += 1
         if c.errors_count > CRITICAL_ERRORS_MAX_NUMBER:
+            self.logger.debug(ErrorDescription._TOO_MANY_ERRORS)
             self.disconnect_client(c)
             time.sleep(0.1)
 
     def handle_critical_error(self, e: Exception, c: ClientEntry, *args):
-        if c.active.is_set():
-            self.logger.error(
-                f"Client with ID [{c.ID}] "\
-                "disconnected unexpectedly."
-            )
-        self.disconnect_client(c)
+        if c:
+            if c.active:
+                self.logger.error(
+                    f"Client with ID [{c.ID}] "\
+                    "disconnected unexpectedly."
+                )
+                self.logger.debug(f"Description: {e}")
+            self.disconnect_client(c)
+    
+    def handle_bad_connect_request(self, e: Exception, c: ClientEntry, *args):
+        if self.running:
+            self.logger.info(ErrorDescription._CONNECTION_REQUEST_FAILED)
+            self.logger.debug(f"Description: {e}")
+
+    def handle_no_error_handler(self, e: Exception, c: ClientEntry, *args):
+        self.logger.debug("".join((
+            ErrorDescription._ERROR_NO_HANDLER_DEFINED,
+            f" Error class: {e.__class__.__name__}",
+        )))
+        self.logger.exception(e)
+        if c:
+            c.errors_count += 1
+            if c.errors_count > CRITICAL_ERRORS_MAX_NUMBER:
+                self.logger.debug(ErrorDescription._TOO_MANY_ERRORS)
+                self.disconnect_client(c)
+                time.sleep(0.1)
 
     message_handlers = {
         CommandType.BROADCAST : handle_broadcast_command,
@@ -321,20 +348,36 @@ class Server(NetworkAgent):
     }
 
     error_handlers = {
+        MessagePackError.__name__ : handle_pack_error,
         UnknownMessageType.__name__ : handle_unknown_message_type,
         MessageWithNoType.__name__ : handle_message_with_no_type,
         InvalidDataForEncryption.__name__ : handle_encryption_error,
+        InvalidRSAKey.__name__ : handle_encryption_error,
+        NullData.__name__ : handle_encryption_error,
+        NonBytesData.__name__ : handle_encryption_error,
         EncryptionError.__name__ : handle_encryption_error,
         IntegrityCheckFailed.__name__ : handle_integrity_fail,
         KeyError.__name__ : handle_invalid_message_code,
         ReceiveError.__name__ : handle_receive_error,
-        CriticalTransferError.__name__ : handle_critical_error
+        CriticalTransferError.__name__ : handle_critical_error,
+        OSError.__name__: handle_bad_connect_request,
+        0 : handle_no_error_handler
     }
 
+    def handle_exceptions(self, e: Exception, *args):
+        err = e.__class__.__name__
+        self.logger.debug(
+            f"{err} exception raised. "\
+            f"Sending to handler."
+        )
+        if err in self.error_handlers:
+            self.error_handlers[err](self, e, *args)
+        else:
+            self.error_handlers[0](self, e, *args)
+
     def handle_incoming_message(self, client: ClientEntry, q: queue.Queue):
-        active = threading.Event()
-        active.set()
-        while active.is_set():
+        active = True
+        while active:
             item = q.get()
             if isinstance(item, bytes):
                 decrypted_msg = None
@@ -344,25 +387,15 @@ class Server(NetworkAgent):
                     message = self.msg_guardian.unpack(decrypted_msg)
                     self.message_handlers[message._code](self, message)
                 except Exception as e:
-                    try:
-                        err = e.__class__.__name__
-                        self.logger.error(
-                            f"{err} exception raised. Sending to handler."
-                        )
-                        args = (decrypted_msg, message)
-                        self.error_handlers[err](self, e, client, *args)
-                    except KeyError:
-                        self.logger.error("".join((
-                            ErrorDescription._ERROR_NO_HANDLER_DEFINED,
-                            f" Error class: {err}",
-                            f" Error description: {e}"
-                        )))
+                    self.logger.error(ErrorDescription._FAILED_TO_HANDLE_MSG)
+                    args = (decrypted_msg, message)
+                    self.handle_exceptions(e, *args)
             elif item is QueueSignal._terminate_thread:
                 self.logger.debug(
                     "Got terminate signal from the queue. "\
                     f"Client ID #[{client.ID}]"
                     )
-                active.clear()
+                active = False
             else:
                 self.logger.warning(
                     f"Got an unexpected item from the queue: {item}"
@@ -382,23 +415,14 @@ class Server(NetworkAgent):
             daemon=True
         )
         msg_handler_thread.start()
-        while client.active.is_set():
+        while client.active:
             buffer = None
             try:
                 buffer = self.receive(client.socket)
                 msg_handler_q.put(buffer)
             except Exception as e:
-                try:
-                    err = e.__class__.__name__
-                    self.logger.error(f"{err} exception raised. Sending to handler.")
-                    args = (buffer,)
-                    self.error_handlers[err](self, e, client, *args)
-                except KeyError:
-                    self.logger.error("".join((
-                        ErrorDescription._ERROR_NO_HANDLER_DEFINED,
-                        f" Error class: {err}",
-                        f" Error description: {e}"
-                    )))
+                self.logger.error(ErrorDescription._FAILED_RECV)
+                self.handle_exceptions(e, client, buffer)
             finally:
                 time.sleep(SRV_RECV_SLEEP_TIME)
         # stop message handler thread 
@@ -417,7 +441,7 @@ class Server(NetworkAgent):
         self.logger.debug(
             "Starting encryption keys exchange with new client."
         )
-
+        self.lock.acquire()
         # send an encapuslated temporary fernet key to client
         temp_key = base64.urlsafe_b64encode(secrets.token_bytes(32))
         prefix = base64.urlsafe_b64encode(secrets.token_bytes(DUMMY_BYTES_SIZE))
@@ -428,7 +452,7 @@ class Server(NetworkAgent):
             f"Key = [{temp_key}]"
         )
         self.send(client_socket, encapsulated_key)
-
+        time.sleep(0.1)
         # send rsa public key to client
         temp_fernet = Fernet(temp_key)
         enc_rsa_key = temp_fernet.encrypt(
@@ -482,6 +506,7 @@ class Server(NetworkAgent):
             "Keys exchange terminated. "\
             "Returning client's cryptographer object."
         )
+        self.lock.release()
         return client_crypt 
 
     def exchange_setup_data_with_client(self, client_socket: socket.socket,
@@ -546,7 +571,7 @@ class Server(NetworkAgent):
         })
         # start new client's thread
         self.logger.debug(f"Starting client [{new_client.ID}] thread.")
-        new_client.active.set()
+        new_client.active = True
         new_client_thread.start()
         self.logger.debug(f"Client thread started: {new_client_thread}")
 
@@ -557,22 +582,18 @@ class Server(NetworkAgent):
             self.logger.info("Waiting for connections...")
             try:
                 client_socket, client_address = self.socket.accept()
-
                 self.logger.debug(f"New client connection from {client_address}")
-
                 new_client = self.setup_new_client(client_socket, client_address)
-
                 self.logger.info(
                     "New client connected, "\
                     f"Client ID=[{new_client.ID}]"
                 )
                 self.logger.debug(f"Online clients: {self.clients}")
                 self.logger.debug(f"Clients threads: {self.client_threads}")
-
-            except (OSError, CriticalTransferError) as e:
+            except Exception as e:
                 if self.running:
-                    self.logger.info("Could not handle connection request.")
-                    self.logger.debug(f"Description: {e}")
+                    self.logger.error(ErrorDescription._CONNECTION_REQUEST_FAILED)
+                self.handle_exceptions(e, None)
 
     def setup_worker_threads(self):
         self.logger.debug("Setting up worker threads.")
@@ -614,27 +635,28 @@ class Server(NetworkAgent):
         self.q_listener.start()
         self.address = (SERVER_IP, SERVER_PORT)
         self.logger.info(f"Starting the server @{self.address} ...")
-        self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.socket.bind(self.address)
-        self.socket.listen()
         self.fernet_key = Cryptographer.generate_fernet_key()
-        self.hmac_key = self.generate_hmac_key()
+        self.hmac_key = MessageGuardian.generate_hmac_key()
         self.msg_guardian = MessageGuardian(self.hmac_key)
         self.logger.debug(f"Public key: {self.public_key}")
         self.logger.debug(f"Fernet key: {self.fernet_key}")
         self.logger.debug(f"HMAC key: {self.hmac_key}")
+        self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.socket.bind(self.address)
+        self.socket.listen()
         self.running = True
-
         self.setup_worker_threads()
         # wait for shutdown command from a client thread
         while self.running:
             signal = self.shutdown_q.get()
             if signal is QueueSignal._shutdown:
                 self.shutdown()
+            else:
+                self.logger.debug("Got a invalid shutdown signal.")
             self.shutdown_q.task_done()
 
     def disconnect_client(self, client: ClientEntry):
-        client.active.clear()
+        client.active = False 
         self.logger.debug(f"Closing client socket. Client ID #[{client.ID}]")
         self.close_socket(client.socket)
         try:

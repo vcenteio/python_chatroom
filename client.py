@@ -13,12 +13,13 @@ class Client(NetworkAgent):
         self.server_address = server_address
 
     running: bool
+    ID: int() 
+    server_public_key: tuple()
     dispatch_q = queue.Queue()
     chatbox_q = queue.Queue()
     disconnect_q = queue.Queue()
     message_output_q = queue.Queue()
-    ID = int() # determined by the server later
-    server_public_key = tuple() # obtained later
+    lock = threading.Lock()
     errors_count = 0
     connected = False
 
@@ -27,7 +28,7 @@ class Client(NetworkAgent):
         while active:
             message = self.chatbox_q.get()
             if isinstance(message, Message):
-                self.logger.info(
+                self.logger.debug(
                     "Putting message into output queue. "\
                     f"Message = {message}")
                 self.message_output_q.put(message)
@@ -101,7 +102,7 @@ class Client(NetworkAgent):
 
     def handle_success_reply(self, reply: Reply):
         # success and error behave the same for now
-        self.logger.info(
+        self.logger.debug(
                 f"Received reply "\
                 f"from {reply._from[1]}: "\
                 f"Message ID [{reply._id}] "\
@@ -164,9 +165,26 @@ class Client(NetworkAgent):
             f"{ErrorDescription._FAILED_TO_SEND} "\
             f"Message ID = [{args[1]._id}] "
         )
+        self.errors_count += 1
+        if self.errors_count > CRITICAL_ERRORS_MAX_NUMBER:
+            self.logger.critical(
+                ErrorDescription._LOST_CONNECTION_W_SRV
+            )
+            self.logger.debug(f"Errors count = {self.errors_count}")
+            self.disconnect_q.put(QueueSignal._disconnect)
+            time.sleep(0.05)
+
 
     def handle_receive_error(self, e: Exception, *args):
-        if self.running:
+        if self.errors_count > CRITICAL_ERRORS_MAX_NUMBER:
+            if self.running:
+                self.logger.critical(
+                    ErrorDescription._LOST_CONNECTION_W_SRV
+                )
+                self.logger.debug(f"Errors count = {self.errors_count}")
+                self.disconnect_q.put(QueueSignal._disconnect)
+            time.sleep(0.05)
+        elif self.running:
             self.logger.error(ErrorDescription._FAILED_RECV)
             self.logger.debug(e)
             reply = Reply(
@@ -177,17 +195,18 @@ class Client(NetworkAgent):
                 ErrorDescription._FAILED_RECV
             )
             self.dispatch_q.put(reply)
+        self.errors_count += 1
 
-    def handle_critical_receive_error(self, e: Exception, *args):
-        if self.running:
-            self.logger.error(ErrorDescription._FAILED_RECV)
-            self.logger.debug(e)
+    def handle_critical_error(self, e: Exception, *args):
+        self.logger.debug(e)
         self.errors_count += 1
         if self.errors_count > CRITICAL_ERRORS_MAX_NUMBER:
-            self.logger.critical(
-                ErrorDescription._LOST_CONNECTION_W_SRV
-            )
-            self.disconnect_q.put(QueueSignal._disconnect)
+            if self.running:
+                self.logger.critical(
+                    ErrorDescription._LOST_CONNECTION_W_SRV
+                )
+                self.logger.debug(f"Errors count = {self.errors_count}")
+                self.disconnect_q.put(QueueSignal._disconnect)
             time.sleep(0.05)
 
     def handle_connect_error(self, e: Exception, *args):
@@ -203,6 +222,7 @@ class Client(NetworkAgent):
             ErrorDescription._ERROR_NO_HANDLER_DEFINED,
             f" Error class: {e.__class__.__name__}",
         )))
+        self.logger.exception(e)
         self.errors_count += 1
         if self.errors_count > CRITICAL_ERRORS_MAX_NUMBER:
             self.logger.critical(
@@ -226,9 +246,9 @@ class Client(NetworkAgent):
         TypeError.__name__ : handle_encryption_error,
         IntegrityCheckFailed.__name__ : handle_integrity_fail,
         KeyError.__name__ : handle_invalid_message_code,
-        ReceiveError.__name__ : handle_send_error,
+        SendError.__name__ : handle_send_error,
         ReceiveError.__name__ : handle_receive_error,
-        CriticalTransferError.__name__ : handle_critical_receive_error,
+        CriticalTransferError.__name__ : handle_critical_error,
         ConnectionRefusedError.__name__ : handle_connect_error,
         TimeoutError.__name__ : handle_connect_error,
         OverflowError.__name__ : handle_connect_error,
@@ -349,25 +369,22 @@ class Client(NetworkAgent):
         # terminate dispatcher thread
         self.terminate_thread(self.dispatch_thread, self.dispatch_q)
         time.sleep(0.5)
-        self.logger.debug(threading.enumerate())
         # close socket
         self.close_socket(self.socket)
         # terminate receiver thread
         self.terminate_thread(self.receive_thread)
-        self.logger.debug(threading.enumerate())
         # terminate chatbox writer thread
         self.terminate_thread(self.chatbox_thread, self.chatbox_q)
-        self.logger.debug(threading.enumerate())
-
         self.logger.debug("Disconnect process finished.")
         self.connected = False
+    
     
     def exchange_keys_with_server(self):
         self.logger.debug(
             "Starting encryption keys exchange with server."
         )
         self.logger.debug(f"My RSA public key: {self.public_key}")
-
+        self.lock.acquire()
         # receive temporary fernet key 
         encapsulated_key = self.receive(self.socket)
         temp_key = encapsulated_key[
@@ -432,6 +449,7 @@ class Client(NetworkAgent):
             self.logger 
         )
 
+        self.lock.release()
         self.logger.debug("Keys exchange terminated.")
     
     def exchange_setup_data_with_server(self):
