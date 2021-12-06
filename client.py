@@ -2,16 +2,25 @@
 from constants import *
 from network_agent import NetworkAgent
 from cryptographer import Cryptographer
+from logging import LogRecord
+import logger
 
 
-class Client(NetworkAgent):
+class Client(threading.Thread):
     def __init__(self, nickname: str, color: str, server_address: tuple):
         super().__init__()
-        self.nickname = nickname # client's nickname
+        self.nickname = nickname
         self.name = self.nickname.upper()
         self.color = color # hex nickname color
         self.server_address = server_address
 
+    address: tuple 
+    transfer: NetworkAgent
+    running: bool
+    fernet_key: bytes 
+    hmac_key: bytes
+    public_key, private_key = Cryptographer.generate_rsa_keys()
+    logging_q = queue.Queue()
     running: bool
     ID: int() 
     server_public_key: tuple()
@@ -22,6 +31,26 @@ class Client(NetworkAgent):
     lock = threading.Lock()
     errors_count = 0
     connected = False
+
+    def exception_filter(self, record: LogRecord):
+        if "Traceback" in record.msg:
+            return False
+        return True
+
+    def setup_logger(self):
+        self.logger = logger.get_new_logger(self.name)
+        self.logger.addHandler(
+            handlers.QueueHandler(self.logging_q)
+        )
+        stream_handler = logger.get_stream_handler()
+        stream_handler.addFilter(self.exception_filter)
+        file_handler = logger.get_file_handler(self.name)
+        self.q_listener = handlers.QueueListener(
+            self.logging_q,
+            stream_handler,
+            file_handler
+        )
+        self.q_listener.respect_handler_level = True
 
     def write_to_chatbox(self):
         active = True
@@ -57,7 +86,7 @@ class Client(NetworkAgent):
                 encrypted_message = None
                 try:
                     encrypted_message = self.prepare_msg_to_dispatch(message)
-                    self.send(self.socket, encrypted_message)
+                    self.transfer.send(encrypted_message)
                     self.logger.debug(
                         f"{SuccessDescription._SUCCESSFULL_SEND} "\
                         f"Class=[{message.__class__.__name__}] "\
@@ -302,7 +331,7 @@ class Client(NetworkAgent):
         while self.running:
             buffer = None
             try:
-                buffer = self.receive(self.socket)
+                buffer = self.transfer.receive()
                 msg_handler_q.put(buffer)
                 self.logger.debug("Message put into handler queue.")
             except Exception as e:
@@ -354,7 +383,56 @@ class Client(NetworkAgent):
         except Exception as e:
             self.handle_exceptions(e, server_ip, server_port)
             return False
+
+    def consume_queue(self, q: queue.Queue, thread_name):
+        try:
+            while not q.empty:
+                _ = q.get()
+                self.logger.debug(f"Queue item: {_}")
+                q.task_done()
+        except queue.Empty:
+            pass
+        self.logger.debug(f"{thread_name} queue consumed.")
+
+    def terminate_thread(self, t: threading.Thread, q: queue.Queue = None):
+        tn = t.name.lower()
+        if q:
+            if t.is_alive():
+                self.logger.debug(f"Sent terminate command to {tn} queue.")
+                q.put(QueueSignal._terminate_thread) 
+                time.sleep(0.3)
+                self.logger.debug(f"Joining {tn} queue.")
+                if q.unfinished_tasks:
+                    self.logger.debug(f"Unfinished tasks: {q.unfinished_tasks}")
+                    self.consume_queue(q, tn)
+                q.join()
+                self.logger.debug(f"{tn} queue joined.")
+        if t.is_alive():
+            try:
+                self.logger.debug(f"Joining {tn} thread.")
+                t.join()
+                self.logger.debug(f"{tn} thread joined.")
+            except RuntimeError:
+                pass
+        self.logger.debug(f"{t.name.lower()} thread terminated.")
         
+    def close_socket(self, s: socket.socket):
+        self.logger.debug("Closing socket.")
+        try:
+            s.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        try:
+            s.close()
+            if self.logger: self.logger.debug("Socket closed.")
+            return True
+        except OSError as e:
+            if self.logger: self.logger.debug(
+                "Socket already closed. "\
+                f"Error description: {e}"
+            )
+            return False
+
     def handle_disconnect(self):
         self.logger.info("Disconnecting...")
         self.running = False
@@ -386,7 +464,7 @@ class Client(NetworkAgent):
         self.logger.debug(f"My RSA public key: {self.public_key}")
         self.lock.acquire()
         # receive temporary fernet key 
-        encapsulated_key = self.receive(self.socket)
+        encapsulated_key = self.transfer.receive()
         temp_key = encapsulated_key[
             DUMMY_ENCODED_SIZE:DUMMY_ENCODED_SIZE+FERNET_KEY_SIZE
         ]
@@ -401,7 +479,7 @@ class Client(NetworkAgent):
         temp_fernet = Fernet(temp_key)
         key = base64.urlsafe_b64decode(
             temp_fernet.decrypt(
-                self.receive(self.socket)
+                self.transfer.receive()
             )
         ).decode().split("-")
         server_public_key = (int(key[0]), int(key[1]))
@@ -415,7 +493,7 @@ class Client(NetworkAgent):
                 f"{self.public_key[0]}-{self.public_key[1]}".encode()
             )
         )
-        self.send(self.socket, enc_rsa_key)
+        self.transfer.send(enc_rsa_key)
         time.sleep(0.1)
         self.logger.debug("RSA public key sent.")
 
@@ -429,13 +507,13 @@ class Client(NetworkAgent):
 
         # receive encrypted fernet key
         self.logger.debug("Waiting for fernet key.")
-        fernet_key = temp_crypt.decrypt(self.receive(self.socket))
+        fernet_key = temp_crypt.decrypt(self.transfer.receive())
         self.logger.debug(f"Fernet key: {fernet_key}")
         time.sleep(0.1)
 
         # receive encrypted hmac key
         self.logger.debug("Waiting for HMAC key.")
-        self.hmac_key = temp_crypt.decrypt(self.receive(self.socket))
+        self.hmac_key = temp_crypt.decrypt(self.transfer.receive())
         self.logger.debug(f"HMAC key: {self.hmac_key}")
         #create message guardian for pack/unpack
         self.msg_guardian = MessageGuardian(self.hmac_key)
@@ -459,8 +537,7 @@ class Client(NetworkAgent):
                             "nickname": self.nickname,
                             "color": self.color
                         })
-        self.send(
-            self.socket,
+        self.transfer.send(
             self.crypt.encrypt(
                 setup_data.encode()
             )
@@ -471,7 +548,7 @@ class Client(NetworkAgent):
         self.logger.debug("Waiting for my ID.")
         self.ID =   struct.unpack("<I",
                         self.crypt.decrypt(
-                            self.receive(self.socket)
+                            self.transfer.receive()
                         )
                     )[0]
         self.logger.debug(f"My ID: {self.ID}")
@@ -504,8 +581,8 @@ class Client(NetworkAgent):
 
     def run(self):
         self.setup_logger()
-        self.running = True
         self.q_listener.start()
+        self.running = True
         connection_success = self.handle_connect(
             self.server_address[0],
             self.server_address[1]
@@ -516,6 +593,7 @@ class Client(NetworkAgent):
             self.q_listener.stop()
             time.sleep(0.2)
             return
+        self.transfer = NetworkAgent(self.socket, self.logger)
         self.exchange_keys_with_server()
         self.exchange_setup_data_with_server()
         self.setup_worker_threads()

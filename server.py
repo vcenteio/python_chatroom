@@ -1,19 +1,19 @@
-﻿from logging import handlers
-import secrets
+﻿from logging import handlers, LogRecord
 from message import *
 from constants import *
 from network_agent import NetworkAgent
 from cryptographer import Cryptographer
+import secrets
 import logger
 
 
 class ClientEntry:
     def __init__(
-            self, socket: socket.socket, address: tuple,
+            self, transfer_agent: NetworkAgent, address: tuple,
             nickname: str, color: str, _id: int,
             crypt: Cryptographer
         ):
-        self.socket = socket
+        self.transfer = transfer_agent
         self.address = address
         self.nickname = nickname
         self.color = color
@@ -28,20 +28,26 @@ class ClientEntry:
         return f"({self.nickname}, {self.address})"
 
 
-class Server(NetworkAgent):
+class Server(threading.Thread):
     def __init__(self):
         super().__init__()
-        self.name = "SRV_MAIN" 
-        self._id = SERVER_ID
-        self.clients = dict()
-        self.client_threads = dict() 
-        self.dispatch_q = queue.Queue()
-        self.broadcast_q = queue.Queue()
-        self.reply_q = queue.Queue()
-        self.shutdown_q = queue.Queue()
-        self.lock = threading.Lock()
-        self.client_id_ctrl_set = set()
-    
+    name = "SRV_MAIN" 
+    _id = SERVER_ID
+    clients = dict()
+    client_threads = dict() 
+    dispatch_q = queue.Queue()
+    broadcast_q = queue.Queue()
+    reply_q = queue.Queue()
+    shutdown_q = queue.Queue()
+    lock = threading.Lock()
+    client_id_ctrl_set = set()
+    address: tuple 
+    running: bool
+    fernet_key: bytes 
+    hmac_key: bytes
+    public_key, private_key = Cryptographer.generate_rsa_keys()
+    logging_q = queue.Queue()
+
     def generate_client_id(self):
         while True:
             rand = random.randint(100000, 200000)
@@ -49,6 +55,26 @@ class Server(NetworkAgent):
                 break
         self.client_id_ctrl_set.add(rand)
         return rand
+
+    def exception_filter(self, record: LogRecord):
+        if "Traceback" in record.msg:
+            return False
+        return True
+
+    def setup_logger(self):
+        self.logger = logger.get_new_logger(self.name)
+        self.logger.addHandler(
+            handlers.QueueHandler(self.logging_q)
+        )
+        stream_handler = logger.get_stream_handler()
+        stream_handler.addFilter(self.exception_filter)
+        file_handler = logger.get_file_handler(self.name)
+        self.q_listener = handlers.QueueListener(
+            self.logging_q,
+            stream_handler,
+            file_handler
+        )
+        self.q_listener.respect_handler_level = True
 
     def broadcast_enqueuer(self):
         active = True
@@ -142,7 +168,9 @@ class Server(NetworkAgent):
                     and isinstance(client, ClientEntry):
                     self.logger.debug("Sending data.")
                     try:
-                        self.send(client.socket, data)
+                        self.lock.acquire()
+                        client.transfer.send(data)
+                        self.lock.release()
                     except Exception as e:
                         self.logger.error(
                             f"{ErrorDescription._FAILED_TO_SEND} "\
@@ -418,7 +446,8 @@ class Server(NetworkAgent):
         while client.active:
             buffer = None
             try:
-                buffer = self.receive(client.socket)
+                # buffer = self.receive(client.socket)
+                buffer = client.transfer.receive()
                 msg_handler_q.put(buffer)
             except Exception as e:
                 self.logger.error(ErrorDescription._FAILED_RECV)
@@ -437,7 +466,7 @@ class Server(NetworkAgent):
             f"Client ID = [{client.ID}]"
         )
     
-    def exchange_keys_with_client(self, client_socket: socket.socket):
+    def exchange_keys_with_client(self, transfer_agent: NetworkAgent):
         self.logger.debug(
             "Starting encryption keys exchange with new client."
         )
@@ -451,7 +480,7 @@ class Server(NetworkAgent):
             "Sending temporary fernet key. "\
             f"Key = [{temp_key}]"
         )
-        self.send(client_socket, encapsulated_key)
+        transfer_agent.send(encapsulated_key)
         time.sleep(0.1)
         # send rsa public key to client
         temp_fernet = Fernet(temp_key)
@@ -461,7 +490,7 @@ class Server(NetworkAgent):
             )
         )
         self.logger.debug("Sending RSA public key to client.")
-        self.send(client_socket, enc_rsa_key)
+        transfer_agent.send(enc_rsa_key)
         time.sleep(0.1)
         self.logger.debug("RSA public key sent.")
 
@@ -469,7 +498,7 @@ class Server(NetworkAgent):
         self.logger.debug("Waiting for client's RSA public key.")
         key = base64.urlsafe_b64decode(
             temp_fernet.decrypt(
-                self.receive(client_socket)
+                transfer_agent.receive()
             )
         ).decode().split("-")
         client_public_key = (int(key[0]), int(key[1]))
@@ -486,11 +515,11 @@ class Server(NetworkAgent):
 
         # encrypt fernet and HMAC keys with client's public key and send them
         self.logger.debug("Sending Fernet key.")
-        self.send(client_socket, temp_crypt.encrypt(self.fernet_key))
+        transfer_agent.send(temp_crypt.encrypt(self.fernet_key))
         self.logger.debug("Fernet key sent.")
         time.sleep(0.1)
         self.logger.debug("Sending HMAC key.")
-        self.send(client_socket, temp_crypt.encrypt(self.hmac_key))
+        transfer_agent.send(temp_crypt.encrypt(self.hmac_key))
         self.logger.debug("HMAC key sent.")
         time.sleep(0.1)
 
@@ -509,14 +538,14 @@ class Server(NetworkAgent):
         self.lock.release()
         return client_crypt 
 
-    def exchange_setup_data_with_client(self, client_socket: socket.socket,
+    def exchange_setup_data_with_client(self, transfer_agent: NetworkAgent,
         client_crypt: Cryptographer, client_id: int):
 
         # receive client's setup data
         self.logger.debug("Waiting for client's setup data.")
         setup_data = json.loads(
             client_crypt.decrypt(
-                self.receive(client_socket)
+                transfer_agent.receive()
             )
         )
         self.logger.debug(
@@ -524,8 +553,7 @@ class Server(NetworkAgent):
         )
         # send generated id number to client
         self.logger.debug(f"Sending ID #[{client_id}] to new client.")
-        self.send(
-            client_socket,
+        transfer_agent.send(
             client_crypt.encrypt(struct.pack("<I", client_id))
         )
         self.logger.debug("Client ID sent successfully.")
@@ -534,19 +562,20 @@ class Server(NetworkAgent):
     def setup_new_client(self, client_socket: socket.socket, address: tuple):
         self.logger.debug("Setting up new client.")
         # keys exchange
-        client_crypt = self.exchange_keys_with_client(client_socket)
+        client_transfer_agent = NetworkAgent(client_socket, self.logger)
+        client_crypt = self.exchange_keys_with_client(client_transfer_agent)
         # generate an id for the new client
         new_id = self.generate_client_id()
         self.logger.debug(f"ID #[{new_id}] generated.")
         # exchange setup data with client
         client_setup_data = self.exchange_setup_data_with_client(
-            client_socket,
+            client_transfer_agent,
             client_crypt,
             new_id
             )
         # create client entry
         new_client = ClientEntry(
-            client_socket,
+            client_transfer_agent,
             address,
             client_setup_data["nickname"],
             client_setup_data["color"],
@@ -655,10 +684,27 @@ class Server(NetworkAgent):
                 self.logger.debug("Got a invalid shutdown signal.")
             self.shutdown_q.task_done()
 
+    def close_socket(self, s: socket.socket):
+        if self.logger: self.logger.debug("Closing socket.")
+        try:
+            s.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        try:
+            s.close()
+            if self.logger: self.logger.debug("Socket closed.")
+            return True
+        except OSError as e:
+            if self.logger: self.logger.debug(
+                "Socket already closed. "\
+                f"Error description: {e}"
+            )
+            return False
+
     def disconnect_client(self, client: ClientEntry):
         client.active = False 
         self.logger.debug(f"Closing client socket. Client ID #[{client.ID}]")
-        self.close_socket(client.socket)
+        self.close_socket(client.transfer.s)
         try:
             self.clients.pop(client.ID)
         except KeyError as e:
@@ -670,6 +716,38 @@ class Server(NetworkAgent):
             f"Client with ID #[{client.ID}] disconnected."
         )
     
+    def consume_queue(self, q: queue.Queue, thread_name):
+        try:
+            while not q.empty:
+                _ = q.get()
+                self.logger.debug(f"Queue item: {_}")
+                q.task_done()
+        except queue.Empty:
+            pass
+        self.logger.debug(f"{thread_name} queue consumed.")
+
+    def terminate_thread(self, t: threading.Thread, q: queue.Queue = None):
+        tn = t.name.lower()
+        if q:
+            if t.is_alive():
+                self.logger.debug(f"Sent terminate command to {tn} queue.")
+                q.put(QueueSignal._terminate_thread) 
+                time.sleep(0.3)
+                self.logger.debug(f"Joining {tn} queue.")
+                if q.unfinished_tasks:
+                    self.logger.debug(f"Unfinished tasks: {q.unfinished_tasks}")
+                    self.consume_queue(q, tn)
+                q.join()
+                self.logger.debug(f"{tn} queue joined.")
+        if t.is_alive():
+            try:
+                self.logger.debug(f"Joining {tn} thread.")
+                t.join()
+                self.logger.debug(f"{tn} thread joined.")
+            except RuntimeError:
+                pass
+        self.logger.debug(f"{t.name.lower()} thread terminated.")
+
     def terminate_client_thread(self, thread: threading.Thread):
         attempts = 0
         while thread.is_alive() and attempts < 4:
