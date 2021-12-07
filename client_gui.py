@@ -1,20 +1,21 @@
-﻿import json
-import queue
-from time import sleep, time
+﻿from time import sleep
 from tkinter import *
 from tkinter import ttk
 from tkinter import messagebox
 from tkinter import colorchooser
 import threading
 import re
+import queue
 from constants import *
 from client import Client
-from queue import Queue
 from message import Message, Command, QueueSignal
 import logger
 from logging import handlers
+from transfer import NetworkDataTransferer, TCPIPv4DataTransferer
 
 class ClientGui():
+    def __init__(self, data_transferer: NetworkDataTransferer):
+        self.data_transferer = data_transferer
 
     root = Tk()
     root.title("Python Chatroom")
@@ -165,7 +166,8 @@ class ClientGui():
         self.client = Client(
             nickname,
             self.nickname_color if self.nickname_color else "#000000",
-            (server_ip, server_port)
+            (server_ip, server_port),
+            self.data_transferer
         )
         self.chatbox_thread = threading.Thread(
             target=self.write_to_chat_box,
@@ -289,5 +291,5 @@ class ClientGui():
 
 
 if __name__ == "__main__":
-    gui_instance = ClientGui()
+    gui_instance = ClientGui(data_transferer=TCPIPv4DataTransferer())
     gui_instance.run()

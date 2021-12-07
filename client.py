@@ -1,28 +1,29 @@
 ﻿from message import *
 from constants import *
-from network_agent import NetworkAgent
+from transfer import NetworkDataTransferer, TCPIPv4DataTransferer
 from cryptographer import Cryptographer
 from logging import LogRecord
 import logger
 
 
 class Client(threading.Thread):
-    def __init__(self, nickname: str, color: str, server_address: tuple):
+    def __init__(self, nickname: str, color: str, server_address: tuple,
+    data_transferer: NetworkDataTransferer
+    ):
         super().__init__()
         self.nickname = nickname
         self.name = self.nickname.upper()
         self.color = color # hex nickname color
         self.server_address = server_address
+        self.transfer = data_transferer
 
+    ID: int() 
     address: tuple 
-    transfer: NetworkAgent
-    running: bool
     fernet_key: bytes 
     hmac_key: bytes
+    running: bool
     public_key, private_key = Cryptographer.generate_rsa_keys()
     logging_q = queue.Queue()
-    running: bool
-    ID: int() 
     server_public_key: tuple()
     dispatch_q = queue.Queue()
     chatbox_q = queue.Queue()
@@ -375,8 +376,7 @@ class Client(threading.Thread):
         self.logger.info("Connecting with the server...")
         self.logger.debug(f"Server address = [{server_ip}:{server_port}].")
         try:
-            self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.address = self.socket.connect((server_ip, server_port))
+            self.transfer._socket.connect((server_ip, server_port))
             self.logger.info("Connection with the server stabilished.")
             self.connected = True
             return True
@@ -416,23 +416,6 @@ class Client(threading.Thread):
                 pass
         self.logger.debug(f"{t.name.lower()} thread terminated.")
         
-    def close_socket(self, s: socket.socket):
-        self.logger.debug("Closing socket.")
-        try:
-            s.shutdown(socket.SHUT_RDWR)
-        except OSError:
-            pass
-        try:
-            s.close()
-            if self.logger: self.logger.debug("Socket closed.")
-            return True
-        except OSError as e:
-            if self.logger: self.logger.debug(
-                "Socket already closed. "\
-                f"Error description: {e}"
-            )
-            return False
-
     def handle_disconnect(self):
         self.logger.info("Disconnecting...")
         self.running = False
@@ -448,7 +431,7 @@ class Client(threading.Thread):
         self.terminate_thread(self.dispatch_thread, self.dispatch_q)
         time.sleep(0.5)
         # close socket
-        self.close_socket(self.socket)
+        self.transfer.close_socket()
         # terminate receiver thread
         self.terminate_thread(self.receive_thread)
         # terminate chatbox writer thread
@@ -532,6 +515,7 @@ class Client(threading.Thread):
     
     def exchange_setup_data_with_server(self):
         # send encrypted client data 
+        self.lock.acquire()
         self.logger.debug("Sending setup data to server.")
         setup_data =  json.dumps({
                             "nickname": self.nickname,
@@ -551,6 +535,7 @@ class Client(threading.Thread):
                             self.transfer.receive()
                         )
                     )[0]
+        self.lock.release()
         self.logger.debug(f"My ID: {self.ID}")
         self.logger.debug("Setup data exchange completed.")
 
@@ -581,6 +566,7 @@ class Client(threading.Thread):
 
     def run(self):
         self.setup_logger()
+        self.transfer.logger = self.logger
         self.q_listener.start()
         self.running = True
         connection_success = self.handle_connect(
@@ -593,7 +579,6 @@ class Client(threading.Thread):
             self.q_listener.stop()
             time.sleep(0.2)
             return
-        self.transfer = NetworkAgent(self.socket, self.logger)
         self.exchange_keys_with_server()
         self.exchange_setup_data_with_server()
         self.setup_worker_threads()
@@ -616,7 +601,8 @@ if __name__ == "__main__":
     client = Client(
         input("Insert nickname: "),
         "blue",
-        (SERVER_IP, SERVER_PORT)
+        (SERVER_IP, SERVER_PORT),
+        TCPIPv4DataTransferer()
     )
     client.start()
     time.sleep(1)

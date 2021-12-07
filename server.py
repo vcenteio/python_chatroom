@@ -1,7 +1,7 @@
 ﻿from logging import handlers, LogRecord
 from message import *
 from constants import *
-from network_agent import NetworkAgent
+from transfer import NetworkDataTransferer, TCPIPv4DataTransferer
 from cryptographer import Cryptographer
 import secrets
 import logger
@@ -9,8 +9,8 @@ import logger
 
 class ClientEntry:
     def __init__(
-            self, transfer_agent: NetworkAgent, address: tuple,
-            nickname: str, color: str, _id: int,
+            self, transfer_agent: NetworkDataTransferer,
+            address: tuple, nickname: str, color: str, _id: int,
             crypt: Cryptographer
         ):
         self.transfer = transfer_agent
@@ -29,8 +29,10 @@ class ClientEntry:
 
 
 class Server(threading.Thread):
-    def __init__(self):
+    def __init__(self, data_transferer: NetworkDataTransferer = None):
         super().__init__()
+        self.transfer = data_transferer
+
     name = "SRV_MAIN" 
     _id = SERVER_ID
     clients = dict()
@@ -446,7 +448,6 @@ class Server(threading.Thread):
         while client.active:
             buffer = None
             try:
-                # buffer = self.receive(client.socket)
                 buffer = client.transfer.receive()
                 msg_handler_q.put(buffer)
             except Exception as e:
@@ -466,7 +467,7 @@ class Server(threading.Thread):
             f"Client ID = [{client.ID}]"
         )
     
-    def exchange_keys_with_client(self, transfer_agent: NetworkAgent):
+    def exchange_keys_with_client(self, transfer_agent: NetworkDataTransferer):
         self.logger.debug(
             "Starting encryption keys exchange with new client."
         )
@@ -538,9 +539,11 @@ class Server(threading.Thread):
         self.lock.release()
         return client_crypt 
 
-    def exchange_setup_data_with_client(self, transfer_agent: NetworkAgent,
-        client_crypt: Cryptographer, client_id: int):
-
+    def exchange_setup_data_with_client(
+        self, transfer_agent: NetworkDataTransferer,
+        client_crypt: Cryptographer, client_id: int
+        ):
+        self.lock.acquire()
         # receive client's setup data
         self.logger.debug("Waiting for client's setup data.")
         setup_data = json.loads(
@@ -556,13 +559,14 @@ class Server(threading.Thread):
         transfer_agent.send(
             client_crypt.encrypt(struct.pack("<I", client_id))
         )
+        self.lock.release()
         self.logger.debug("Client ID sent successfully.")
         return setup_data
 
     def setup_new_client(self, client_socket: socket.socket, address: tuple):
         self.logger.debug("Setting up new client.")
         # keys exchange
-        client_transfer_agent = NetworkAgent(client_socket, self.logger)
+        client_transfer_agent = self.transfer.__class__(client_socket, self.logger)
         client_crypt = self.exchange_keys_with_client(client_transfer_agent)
         # generate an id for the new client
         new_id = self.generate_client_id()
@@ -610,7 +614,7 @@ class Server(threading.Thread):
         while self.running:
             self.logger.info("Waiting for connections...")
             try:
-                client_socket, client_address = self.socket.accept()
+                client_socket, client_address = self.transfer._socket.accept()
                 self.logger.debug(f"New client connection from {client_address}")
                 new_client = self.setup_new_client(client_socket, client_address)
                 self.logger.info(
@@ -661,6 +665,7 @@ class Server(threading.Thread):
 
     def run(self):
         self.setup_logger()
+        self.transfer.logger = self.logger
         self.q_listener.start()
         self.address = (SERVER_IP, SERVER_PORT)
         self.logger.info(f"Starting the server @{self.address} ...")
@@ -670,9 +675,8 @@ class Server(threading.Thread):
         self.logger.debug(f"Public key: {self.public_key}")
         self.logger.debug(f"Fernet key: {self.fernet_key}")
         self.logger.debug(f"HMAC key: {self.hmac_key}")
-        self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.socket.bind(self.address)
-        self.socket.listen()
+        self.transfer._socket.bind(self.address)
+        self.transfer._socket.listen()
         self.running = True
         self.setup_worker_threads()
         # wait for shutdown command from a client thread
@@ -684,27 +688,10 @@ class Server(threading.Thread):
                 self.logger.debug("Got a invalid shutdown signal.")
             self.shutdown_q.task_done()
 
-    def close_socket(self, s: socket.socket):
-        if self.logger: self.logger.debug("Closing socket.")
-        try:
-            s.shutdown(socket.SHUT_RDWR)
-        except OSError:
-            pass
-        try:
-            s.close()
-            if self.logger: self.logger.debug("Socket closed.")
-            return True
-        except OSError as e:
-            if self.logger: self.logger.debug(
-                "Socket already closed. "\
-                f"Error description: {e}"
-            )
-            return False
-
     def disconnect_client(self, client: ClientEntry):
         client.active = False 
         self.logger.debug(f"Closing client socket. Client ID #[{client.ID}]")
-        self.close_socket(client.transfer.s)
+        client.transfer.close_socket()
         try:
             self.clients.pop(client.ID)
         except KeyError as e:
@@ -819,7 +806,7 @@ class Server(threading.Thread):
         )
         # close server socket and connection handler thread
         self.logger.debug("Closing server's socket.")
-        self.close_socket(self.socket)
+        self.transfer.close_socket()
         self.logger.debug("Server's socket closed.")
         self.terminate_thread(self.connections_thread)
         
@@ -828,5 +815,5 @@ class Server(threading.Thread):
         
 
 if __name__ == "__main__":
-    server = Server()
+    server = Server(data_transferer=TCPIPv4DataTransferer())
     server.start()
