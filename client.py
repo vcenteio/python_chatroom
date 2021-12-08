@@ -1,14 +1,15 @@
 ﻿from message import *
 from constants import *
 from transfer import NetworkDataTransferer, TCPIPv4DataTransferer
-from cryptographer import Cryptographer
+from cryptographer import Cryptographer, RSAFernetCryptographer
 from logging import LogRecord
 import logger
 
 
 class Client(threading.Thread):
     def __init__(self, nickname: str, color: str, server_address: tuple,
-    data_transferer: NetworkDataTransferer
+    data_transferer: NetworkDataTransferer,
+    cryptographer: Cryptographer
     ):
         super().__init__()
         self.nickname = nickname
@@ -16,15 +17,13 @@ class Client(threading.Thread):
         self.color = color # hex nickname color
         self.server_address = server_address
         self.transfer = data_transferer
+        self.crypt = cryptographer
 
     ID: int() 
     address: tuple 
-    fernet_key: bytes 
     hmac_key: bytes
     running: bool
-    public_key, private_key = Cryptographer.generate_rsa_keys()
     logging_q = queue.Queue()
-    server_public_key: tuple()
     dispatch_q = queue.Queue()
     chatbox_q = queue.Queue()
     disconnect_q = queue.Queue()
@@ -439,80 +438,19 @@ class Client(threading.Thread):
         self.logger.debug("Disconnect process finished.")
         self.connected = False
     
-    
     def exchange_keys_with_server(self):
-        self.logger.debug(
-            "Starting encryption keys exchange with server."
-        )
-        self.logger.debug(f"My RSA public key: {self.public_key}")
+        self.logger.debug("Begining keys exchange with server.")
         self.lock.acquire()
-        # receive temporary fernet key 
-        encapsulated_key = self.transfer.receive()
-        temp_key = encapsulated_key[
-            DUMMY_ENCODED_SIZE:DUMMY_ENCODED_SIZE+FERNET_KEY_SIZE
-        ]
-        self.logger.debug(
-            "Received temporary fernet key. "\
-            f"Key = [{temp_key}]"
-        )
+        self.crypt.import_decryption_keys(self.transfer.receive())
         time.sleep(0.1)
-
-        # receive server public key
-        self.logger.debug("Waiting for server's RSA public key.")
-        temp_fernet = Fernet(temp_key)
-        key = base64.urlsafe_b64decode(
-            temp_fernet.decrypt(
-                self.transfer.receive()
-            )
-        ).decode().split("-")
-        server_public_key = (int(key[0]), int(key[1]))
+        self.transfer.send(self.crypt.export_encryption_keys())
         time.sleep(0.1)
-        self.logger.debug(f"Server public key: {server_public_key}")
-
-        # send public key to server
-        self.logger.debug("Sending RSA public key to server.")
-        enc_rsa_key = temp_fernet.encrypt(
-            base64.urlsafe_b64encode(
-                f"{self.public_key[0]}-{self.public_key[1]}".encode()
-            )
-        )
-        self.transfer.send(enc_rsa_key)
-        time.sleep(0.1)
-        self.logger.debug("RSA public key sent.")
-
-        # create temporary crypt object
-        temp_crypt = Cryptographer(
-            self.private_key,
-            server_public_key,
-            temp_key,
-            self.logger
-        )
-
-        # receive encrypted fernet key
-        self.logger.debug("Waiting for fernet key.")
-        fernet_key = temp_crypt.decrypt(self.transfer.receive())
-        self.logger.debug(f"Fernet key: {fernet_key}")
-        time.sleep(0.1)
-
-        # receive encrypted hmac key
-        self.logger.debug("Waiting for HMAC key.")
-        self.hmac_key = temp_crypt.decrypt(self.transfer.receive())
-        self.logger.debug(f"HMAC key: {self.hmac_key}")
-        #create message guardian for pack/unpack
+        self.hmac_key = self.crypt.decrypt(self.transfer.receive())
+        self.logger.debug(f"Received hmac_key: {self.hmac_key}")
         self.msg_guardian = MessageGuardian(self.hmac_key)
-        time.sleep(0.1)
-
-        # create cryptographer object
-        self.crypt = Cryptographer(
-            self.private_key,
-            server_public_key,
-            fernet_key,
-            self.logger 
-        )
-
         self.lock.release()
-        self.logger.debug("Keys exchange terminated.")
-    
+        self.logger.debug("Keys exchange finished.")
+
     def exchange_setup_data_with_server(self):
         # send encrypted client data 
         self.lock.acquire()
@@ -567,6 +505,7 @@ class Client(threading.Thread):
     def run(self):
         self.setup_logger()
         self.transfer.logger = self.logger
+        self.crypt.logger = self.logger
         self.q_listener.start()
         self.running = True
         connection_success = self.handle_connect(
@@ -602,7 +541,8 @@ if __name__ == "__main__":
         input("Insert nickname: "),
         "blue",
         (SERVER_IP, SERVER_PORT),
-        TCPIPv4DataTransferer()
+        TCPIPv4DataTransferer(),
+        RSAFernetCryptographer()
     )
     client.start()
     time.sleep(1)

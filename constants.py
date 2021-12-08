@@ -1,7 +1,6 @@
 ﻿import socket
 import hashlib
 import struct
-import base64
 import logging
 
 SERVER_NAME = "SERVER"
@@ -13,10 +12,6 @@ HEADER_FORMAT = "<I"
 HEADER_SIZE =  struct.calcsize(HEADER_FORMAT)
 RECV_BLOCK_SIZE = 64
 HASH_SIZE = len(hashlib.sha256().digest())
-BYTES_SEPARATOR = b"$_-_$"
-DUMMY_BYTES_SIZE = 2048
-DUMMY_ENCODED_SIZE = len(base64.urlsafe_b64encode(bytes(DUMMY_BYTES_SIZE))) 
-FERNET_KEY_SIZE = len(base64.urlsafe_b64encode(bytes(32)))
 SRV_SEND_SLEEP_TIME = 0.2
 SRV_RECV_SLEEP_TIME = 0
 CLT_SEND_SLEEP_TIME = 0.5

@@ -2,14 +2,14 @@
 from message import *
 from abc import ABC, abstractmethod
 from logging import Logger
-
+from socket import socket as socket, AF_INET, SOCK_STREAM, SHUT_RDWR
 
 class NetworkDataTransferer(ABC):
     '''
     Abstract Base Class for DataTransferer classes.
     '''
-    _socket: socket.socket
-    _logger: Logger
+    _socket: socket
+    logger: Logger
     
     @abstractmethod
     def send(self, data: bytes) -> None:
@@ -40,11 +40,11 @@ class NetworkDataTransferer(ABC):
         ...
 
 class TCPIPv4DataTransferer(NetworkDataTransferer):
-    def __init__(self, _socket: socket.socket = None, logger: Logger = None):
+    def __init__(self, _socket: socket = None, logger: Logger = None):
         if _socket:
             self._socket = _socket
         else:
-            self._socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self._socket = socket(AF_INET, SOCK_STREAM)
         self.logger = logger
 
     def send(self, data: bytes) -> None:
@@ -126,7 +126,7 @@ class TCPIPv4DataTransferer(NetworkDataTransferer):
     def close_socket(self):
         if self.logger: self.logger.debug("Closing socket.")
         try:
-            self._socket.shutdown(socket.SHUT_RDWR)
+            self._socket.shutdown(SHUT_RDWR)
         except OSError:
             pass
         try:
