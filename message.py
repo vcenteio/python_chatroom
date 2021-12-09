@@ -1,4 +1,4 @@
-﻿from logging import handlers
+﻿from logging import Logger, handlers
 import time
 import sys
 import random
@@ -18,7 +18,7 @@ from constants import *
 from exceptions import *
 from enum import Enum, IntEnum, auto, unique
 from dataclasses import dataclass, field
-from abc import ABC, abstractclassmethod, abstractmethod
+from abc import ABC, abstractclassmethod, abstractmethod, abstractstaticmethod
 
 
 class MessageType(IntEnum):
@@ -148,8 +148,14 @@ class Reply(Message):
             cls._id_count += 1
             return _id
 
+class MessageFactory(ABC):
 
-class MessageFactory():
+    @abstractmethod
+    def create(self, msg_dict: dict) -> Message:
+        ...
+
+
+class DictBasedMessageFactory(MessageFactory):
 
     def create_command(msg_dict: dict) -> Command:
         return Command(**msg_dict)
@@ -162,7 +168,7 @@ class MessageFactory():
         Reply._type : create_reply
     }
 
-    def create(self, msg_dict: dict):
+    def create(self, msg_dict: dict) -> Message:
         try:
             _type = msg_dict["_type"]
         except KeyError as e:
@@ -174,16 +180,46 @@ class MessageFactory():
             return self.type_handlers[_type](msg_dict)
         except KeyError as e:
             raise UnknownMessageType(
-                ErrorDescription._UNKNOWN_MSG_TYPE
-                + " " + e
+                f"{ErrorDescription._UNKNOWN_MSG_TYPE} {e}"
             )
 
+class MessageGuardian(ABC):
+    message_factory: MessageFactory
+    logger: Logger
 
-class MessageGuardian():
-    def __init__(self, hmac_key):
-        self.hmac_key: bytes = hmac_key
+    @abstractmethod
+    def set_key(self, key: bytes) -> None:
+        ...
     
-    message_factory = MessageFactory()
+    @abstractmethod
+    def get_key(self) -> None:
+        ...
+
+    @abstractmethod
+    def pack(self, message: Message) -> bytes:
+        ...
+
+    @abstractmethod
+    def unpack(self, data: bytes) -> Message:
+        ...
+    
+    @abstractstaticmethod
+    def generate_key() -> bytes:
+        ...
+
+
+class HMACMessageGuardian(MessageGuardian):
+    def __init__(self, message_factory: MessageFactory,
+        hmac_key: bytes = None, logger: Logger = None):
+        self.message_factory = message_factory
+        self.hmac_key = hmac_key if hmac_key else self.generate_key()
+        self.logger = logger
+
+    def set_key(self, hmac_key: bytes) -> None:
+        self.hmac_key = hmac_key
+    
+    def get_key(self) -> None:
+        return self.hmac_key
 
     def pack(self, message: Message) -> bytes:
         try:
@@ -205,6 +241,6 @@ class MessageGuardian():
                 ErrorDescription._INTEGRITY_FAILURE
             )
 
-    @classmethod    
-    def generate_hmac_key(cls):
+    @staticmethod
+    def generate_key():
         return secrets.token_bytes(HASH_SIZE)

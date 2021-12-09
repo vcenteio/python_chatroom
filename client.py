@@ -9,7 +9,8 @@ import logger
 class Client(threading.Thread):
     def __init__(self, nickname: str, color: str, server_address: tuple,
     data_transferer: NetworkDataTransferer,
-    cryptographer: Cryptographer
+    cryptographer: Cryptographer,
+    msg_guardian: MessageGuardian
     ):
         super().__init__()
         self.nickname = nickname
@@ -18,10 +19,10 @@ class Client(threading.Thread):
         self.server_address = server_address
         self.transfer = data_transferer
         self.crypt = cryptographer
+        self.msg_guardian = msg_guardian
 
     ID: int() 
     address: tuple 
-    hmac_key: bytes
     running: bool
     logging_q = queue.Queue()
     dispatch_q = queue.Queue()
@@ -442,9 +443,10 @@ class Client(threading.Thread):
         time.sleep(0.1)
         self.transfer.send(self.crypt.export_encryption_keys())
         time.sleep(0.1)
-        self.hmac_key = self.crypt.decrypt(self.transfer.receive())
-        self.logger.debug(f"Received hmac_key: {self.hmac_key}")
-        self.msg_guardian = MessageGuardian(self.hmac_key)
+        self.msg_guardian.set_key(
+            self.crypt.decrypt(self.transfer.receive())
+        )
+        self.logger.debug(f"Received hmac key: {self.msg_guardian.get_key()}")
         self.lock.release()
         self.logger.debug("Keys exchange finished.")
 
@@ -503,6 +505,7 @@ class Client(threading.Thread):
         self.setup_logger()
         self.transfer.logger = self.logger
         self.crypt.logger = self.logger
+        self.msg_guardian.logger = self.logger
         self.q_listener.start()
         self.running = True
         connection_success = self.handle_connect(
@@ -539,7 +542,8 @@ if __name__ == "__main__":
         "blue",
         (SERVER_IP, SERVER_PORT),
         TCPIPv4DataTransferer(),
-        RSAFernetCryptographer()
+        RSAFernetCryptographer(),
+        HMACMessageGuardian(DictBasedMessageFactory())
     )
     client.start()
     time.sleep(1)

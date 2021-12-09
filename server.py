@@ -10,7 +10,8 @@ class ClientEntry:
     def __init__(
             self, transfer_agent: NetworkDataTransferer,
             address: tuple, nickname: str, color: str, _id: int,
-            crypt: Cryptographer
+            crypt: Cryptographer,
+            msg_guardian: MessageGuardian
         ):
         self.transfer = transfer_agent
         self.address = address
@@ -18,6 +19,7 @@ class ClientEntry:
         self.color = color
         self.ID = _id
         self.crypt = crypt 
+        self.msg_guardian = msg_guardian
 
     active: bool
     thread_id: int
@@ -29,12 +31,14 @@ class ClientEntry:
 
 class Server(threading.Thread):
     def __init__(self,
-    data_transferer: NetworkDataTransferer = None,
-    cryptographer: Cryptographer = None
+        data_transferer: NetworkDataTransferer,
+        cryptographer: Cryptographer,
+        msg_guardian: MessageGuardian
     ):
         super().__init__()
         self.transfer = data_transferer
         self.crypt = cryptographer
+        self.msg_guardian = msg_guardian
 
     name = "SRV_MAIN" 
     _id = SERVER_ID
@@ -48,7 +52,6 @@ class Server(threading.Thread):
     client_id_ctrl_set = set()
     address: tuple 
     running: bool
-    hmac_key: bytes
     logging_q = queue.Queue()
 
     def generate_client_id(self):
@@ -359,7 +362,7 @@ class Server(threading.Thread):
             f" Error class: {e.__class__.__name__}",
         )))
         self.logger.exception(e)
-        if c:
+        if isinstance(c, ClientEntry):
             c.errors_count += 1
             if c.errors_count > CRITICAL_ERRORS_MAX_NUMBER:
                 self.logger.debug(ErrorDescription._TOO_MANY_ERRORS)
@@ -417,7 +420,7 @@ class Server(threading.Thread):
                 except Exception as e:
                     self.logger.error(ErrorDescription._FAILED_TO_HANDLE_MSG)
                     args = (decrypted_msg, message)
-                    self.handle_exceptions(e, *args)
+                    self.handle_exceptions(e, client, *args)
             elif item is QueueSignal._terminate_thread:
                 self.logger.debug(
                     "Got terminate signal from the queue. "\
@@ -473,10 +476,13 @@ class Server(threading.Thread):
         time.sleep(0.1)
         client_crypt.import_decryption_keys(transfer_agent.receive())
         time.sleep(0.1)
-        transfer_agent.send(client_crypt.encrypt(self.hmac_key))
+        self.logger.debug(f"Sending hmac key: {self.msg_guardian.get_key()}")
+        transfer_agent.send(
+            client_crypt.encrypt(self.msg_guardian.get_key())
+        )
         self.lock.release()
         self.logger.debug("Keys exchange finished.")
-        return client_crypt
+        return (client_crypt, self.msg_guardian)
 
     def exchange_setup_data_with_client(
         self, transfer_agent: NetworkDataTransferer,
@@ -505,8 +511,12 @@ class Server(threading.Thread):
     def setup_new_client(self, client_socket: socket.socket, address: tuple):
         self.logger.debug("Setting up new client.")
         # keys exchange
-        client_transfer_agent = self.transfer.__class__(client_socket, self.logger)
-        client_crypt = self.exchange_keys_with_client(client_transfer_agent)
+        client_transfer_agent = self.transfer.__class__(
+                                    client_socket, self.logger
+                                )
+        client_crypt, client_msg_guardian = self.exchange_keys_with_client(
+                                                client_transfer_agent
+                                            )
         # generate an id for the new client
         new_id = self.generate_client_id()
         self.logger.debug(f"ID #[{new_id}] generated.")
@@ -523,7 +533,8 @@ class Server(threading.Thread):
             client_setup_data["nickname"],
             client_setup_data["color"],
             new_id,
-            client_crypt 
+            client_crypt,
+            client_msg_guardian # for future usage
         )
         self.logger.debug(
             "New client registry successfully created, "\
@@ -606,12 +617,10 @@ class Server(threading.Thread):
         self.setup_logger()
         self.transfer.logger = self.logger
         self.crypt.logger = self.logger
+        self.msg_guardian.logger = self.logger
         self.q_listener.start()
         self.address = (SERVER_IP, SERVER_PORT)
         self.logger.info(f"Starting the server @{self.address} ...")
-        self.hmac_key = MessageGuardian.generate_hmac_key()
-        self.msg_guardian = MessageGuardian(self.hmac_key)
-        self.logger.debug(f"hmac key: {self.hmac_key}")
         self.transfer._socket.bind(self.address)
         self.transfer._socket.listen()
         self.running = True
@@ -753,7 +762,8 @@ class Server(threading.Thread):
 
 if __name__ == "__main__":
     server = Server(
-        data_transferer=TCPIPv4DataTransferer(),
-        cryptographer=RSAFernetCryptographer()
+        TCPIPv4DataTransferer(),
+        RSAFernetCryptographer(),
+        HMACMessageGuardian(DictBasedMessageFactory())
     )
     server.start()
