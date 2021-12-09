@@ -109,9 +109,9 @@ class Client(threading.Thread):
         reply = Reply(
             ReplyType.SUCCESS,
             (self.ID, self.nickname),
-            SERVER_ID,
-            command._id,
-            ReplyDescription._SUCCESSFULL_RECV
+            ReplyDescription._SUCCESSFULL_RECV,
+            _to=SERVER_ID,
+            _message_id=command._id,
         )
         self.logger.debug(
             f"Received command "\
@@ -155,11 +155,10 @@ class Client(threading.Thread):
             f"Messagetype = {e.args[1]}"
         )
         reply = Reply(
-                    ErrorType.UNPACK_ERROR,
+                    ReplyType.ERROR,
                     (self.ID, self.nickname),
-                    client.ID,
-                    None, 
-                    ReplyDescription._UNKNOWN_MSG_TYPE
+                    ReplyDescription._UNKNOWN_MSG_TYPE,
+                    _to=SERVER_ID,
                 )
         self.dispatch_q.put(reply)
     
@@ -167,11 +166,10 @@ class Client(threading.Thread):
         self.logger.error(ErrorDescription._FAILED_RECV)
         self.logger.debug(ErrorDescription._INTEGRITY_FAILURE)
         reply = Reply(
-                    ErrorType.UNPACK_ERROR,
+                    ReplyType.ERROR,
                     (self.ID, self.nickname),
-                    client.ID,
-                    None,
-                    ReplyDescription._INTEGRITY_FAILURE
+                    ReplyDescription._INTEGRITY_FAILURE,
+                    _to=SERVER_ID,
                 )
         self.dispatch_q.put(reply)
 
@@ -217,12 +215,11 @@ class Client(threading.Thread):
             self.logger.error(ErrorDescription._FAILED_RECV)
             self.logger.debug(e)
             reply = Reply(
-                ReplyType.ERROR,
-                (self.ID, self.nickname),
-                SERVER_ID,
-                None,
-                ErrorDescription._FAILED_RECV
-            )
+                        ReplyType.ERROR,
+                        (self.ID, self.nickname),
+                        ErrorDescription._FAILED_RECV,
+                        _to=SERVER_ID,
+                    )
             self.dispatch_q.put(reply)
         self.errors_count += 1
 

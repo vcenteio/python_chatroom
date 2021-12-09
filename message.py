@@ -17,6 +17,8 @@ from cryptography.fernet import Fernet
 from constants import *
 from exceptions import *
 from enum import Enum, IntEnum, auto, unique
+from dataclasses import dataclass, field
+from abc import ABC, abstractclassmethod, abstractmethod
 
 
 class MessageType(IntEnum):
@@ -33,6 +35,7 @@ class MessageType(IntEnum):
     def __str__(self):
         return f"{self.__class__.__name__}.{self.name}: {self.value}"
     
+
 @unique    
 class CommandType(MessageType):
     BROADCAST = auto()
@@ -40,16 +43,19 @@ class CommandType(MessageType):
     DISCONNECT = auto()
     SHUTDOWN = auto()
 
+
 @unique
 class ReplyType(MessageType):
     SUCCESS = auto()
     ERROR = auto()
+
 
 @unique
 class ErrorType(MessageType):
     UNPACK_ERROR = auto()
     RECEIVE_ERROR = auto()
     CONNECTION_LOST = auto()
+
 
 class ReplyDescription():
     _SUCCESSFULL_RECV = "successfully received"
@@ -58,8 +64,10 @@ class ReplyDescription():
     _UNKNOWN_MSG_TYPE = "type unknown"
     _MSG_UNPACK_ERROR = "error unpacking message"
 
+
 class SuccessDescription():
     _SUCCESSFULL_SEND = "Message sent successfully."
+
 
 class ErrorDescription():
     _FAILED_RECV = "Message could not be received."
@@ -82,69 +90,62 @@ class ErrorDescription():
                                 "there is no defined handler."
     _TOO_MANY_ERRORS = "Too many errors occured."
 
+
 class QueueSignal(Enum):
     _terminate_thread = auto()
     _disconnect = auto()
     _shutdown = auto()
 
 
-class Message():
+@dataclass
+class Message(ABC):
 
-    def __init__(self, _code: int, _from: tuple, _data=None, _time=None):
-        self._code = _code
-        self._from = _from
-        self._data = _data
-        self._time = time.asctime() if _time == None else _time
+    _code: int
+    _from: tuple[int, str]
+    _data: str = None
+    _id: str = None
+    _time: str = None
+
+    @abstractclassmethod
+    def generate_id(self, client_id) -> str:
+        ...
+
+    def __post_init__(self):
+        if not self._id:
+            self._id = self.generate_id(self._from[0])
+        if not self._time:
+            self._time = time.asctime()
 
     def __str__(self) -> str:
         return self._data
-    
-    def __repr__(self) -> str:
-        return self.__dict__
 
 
+@dataclass
 class Command(Message):
-    TYPE = 1
-    id_count = 1
-
-    def __init__(
-        self, _code: int,
-        _from: tuple,
-        _data=None, _id=None, _time=None, _type=None, _nick_color=None
-        ):
-        super().__init__(_code, _from, _data, _time)
-        self._id = self.generate_id(_from[0]) if _id == None else _id
-        self._type = self.TYPE if _type == None else _type
-        self._nick_color = _nick_color
-
+    _id_count: int = field(default=1, init=False)
+    _nick_color: str = None
+    _type: int = field(default=1)
+    
     @classmethod
-    def generate_id(cls, client_id):
-        if cls.id_count < 100000:
-            _id = f"#{cls.id_count:05}@{client_id}"
-            cls.id_count += 1
+    def generate_id(cls, client_id) -> str:
+        if cls._id_count < 100000:
+            _id = f"#C{cls._id_count:08}@{client_id}"
+            cls._id_count += 1
             return _id
 
 
+@dataclass
 class Reply(Message):
-    TYPE = 2 
-    id_count = 1
-
-    def __init__(
-        self, _code: int,
-        _from: tuple, _to, _message_id: str,
-        _data=None, _id=None, _time=None, _type=None
-        ):
-        super().__init__(_code, _from, _data, _time)
-        self._id = self.generate_id() if _id == None else _id
-        self._to = _to
-        self._message_id = _message_id #original message id
-        self._type = self.TYPE if _type == None else _type
-
+    _id_count: int = field(default=1, init=False)
+    _to: int = None
+    _message_id: int = None
+    _type: int = field(default=2)
+    
     @classmethod
-    def generate_id(cls):
-        if cls.id_count < 100000:
-            _id = f"#{cls.id_count:05}"
-            cls.id_count += 1
+    def generate_id(cls, client_id) -> str:
+        if cls._id_count < 100000:
+            _id = f"#R{cls._id_count:08}@{client_id}"
+            cls._id_count += 1
             return _id
 
 
@@ -157,8 +158,8 @@ class MessageFactory():
         return Reply(**msg_dict)
 
     type_handlers = {
-        Command.TYPE : create_command,
-        Reply.TYPE : create_reply
+        Command._type : create_command,
+        Reply._type : create_reply
     }
 
     def create(self, msg_dict: dict):

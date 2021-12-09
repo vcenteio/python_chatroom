@@ -197,9 +197,9 @@ class Server(threading.Thread):
         reply = Reply(
             ReplyType.SUCCESS,
             (self._id, self.name),
-            command._from[0],
-            command._id,
-            ReplyDescription._SUCCESSFULL_RECV
+            ReplyDescription._SUCCESSFULL_RECV,
+            _to=command._from[0],
+            _message_id=command._id,
         )
         self.broadcast_q.put(command)
         self.reply_q.put(reply)
@@ -264,9 +264,8 @@ class Server(threading.Thread):
         reply = Reply(
                     ReplyType.ERROR,
                     (self._id, self.name),
-                    c.ID,
-                    None,
-                    _data=ErrorDescription._UNKNOWN_MSG_TYPE
+                    ErrorDescription._UNKNOWN_MSG_TYPE,
+                    _to=c.ID
                 )
         self.reply_q.put(reply)
     
@@ -295,9 +294,8 @@ class Server(threading.Thread):
         reply = Reply(
                     ReplyType.ERROR,
                     (self._id, self.name),
-                    c.ID,
-                    None, 
-                    ReplyDescription._INTEGRITY_FAILURE
+                    ReplyDescription._INTEGRITY_FAILURE,
+                    _to=c.ID
                 )
         self.reply_q.put(reply)
         c.errors_count += 1
@@ -328,12 +326,11 @@ class Server(threading.Thread):
         self.logger.error(ErrorDescription._FAILED_RECV)
         self.logger.debug(e)
         reply = Reply(
-            ReplyType.ERROR,
-            (self._id, self.name),
-            c.ID,
-            None,
-            ErrorDescription._FAILED_RECV
-        )
+                    ReplyType.ERROR,
+                    (self._id, self.name),
+                    ErrorDescription._FAILED_RECV,
+                    _to=c.ID,
+                )
         self.reply_q.put(reply)
         c.errors_count += 1
         if c.errors_count > CRITICAL_ERRORS_MAX_NUMBER:
