@@ -318,7 +318,7 @@ class Server(threading.Thread):
                     "disconnected unexpectedly."
                 )
                 self.logger.debug(f"Description: {e}")
-            self.disconnect_client(c)
+                self.disconnect_client(c)
     
     def handle_bad_connect_request(self, e: Exception, c: ClientEntry, *args):
         if self.running:
@@ -409,8 +409,9 @@ class Server(threading.Thread):
                 buffer = client.transfer.receive()
                 msg_handler_q.put(buffer)
             except Exception as e:
-                self.logger.error(ErrorDescription._FAILED_RECV)
-                self.handle_exceptions(e, client, buffer)
+                if client.active:
+                    self.logger.error(ErrorDescription._FAILED_RECV)
+                    self.handle_exceptions(e, client, buffer)
             finally:
                 time.sleep(SRV_RECV_SLEEP_TIME)
         self.logger.debug(
@@ -596,13 +597,14 @@ class Server(threading.Thread):
 
     def disconnect_client(self, client: ClientEntry):
         client.active = False 
+        time.sleep(0.1)
         self.logger.debug(f"Closing client socket. Client ID #[{client.ID}]")
         client.transfer.close_socket()
         try:
             self.clients.pop(client.ID)
         except KeyError as e:
             self.logger.debug(
-                f"Could not remove client from list. "\
+                f"Client with ID [{client.ID}] is not on the list. "\
                 f"Description={e}"
             )
         self.logger.info(
@@ -612,7 +614,7 @@ class Server(threading.Thread):
     def consume_queue(self, q: queue.Queue, thread_name):
         try:
             while not q.empty:
-                _ = q.get()
+                _ = q.get_nowait()
                 self.logger.debug(f"Queue item: {_}")
                 q.task_done()
         except queue.Empty:
@@ -646,7 +648,7 @@ class Server(threading.Thread):
         while thread.is_alive() and attempts < 4:
             try:
                 thread.join()
-                self.logger.debug(f"Client with thread name [{thread.name}] joined.")
+                self.logger.debug(f"Client thread [{thread.name}] joined.")
             except RuntimeError:
                 attempts += 1
                 if attempts < 4:
@@ -663,6 +665,13 @@ class Server(threading.Thread):
                     )
 
     def disconnect_all_clients(self):
+        self.logger.info("Sendind disconnect command to clients...")
+        disconnect_cmd = Command(
+            CommandType.DISCONNECT,
+            (self._id, self.name)
+        )
+        self.broadcast_q.put(disconnect_cmd)
+        time.sleep(0.2)
         self.logger.debug("Closing client sockets.")
         clients = tuple(self.clients.values())
         for client in clients:
@@ -681,7 +690,7 @@ class Server(threading.Thread):
         self.running = False
         time.sleep(2)
         # reconfig logger: queue handler -> direct file and stream handlers
-        self.logger.debug("Terminating QueueListener thread.")
+        self.logger.debug("Terminating QueueListener thread...")
         self.q_listener.stop()
         self.logger.debug("QueueListener thread terminated.")
         for handler in self.logger.handlers:

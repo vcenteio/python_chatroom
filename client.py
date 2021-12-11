@@ -114,8 +114,9 @@ class Client(threading.Thread):
         pass
 
     def handle_disconnect_command(self, command: Command):
-        self.logger.info(f"Received {command._code} from the server")
-        self.disconnect_q.put(QueueSignal._disconnect)
+        self.logger.info(f"Received disconnect command from the server.")
+        self.disconnect_q.put(QueueSignal._shutdown)
+        time.sleep(0.2)
 
     def handle_success_reply(self, reply: Reply):
         # success and error behave the same for now
@@ -324,12 +325,10 @@ class Client(threading.Thread):
         if data == "c:shut":
             message = Command(
                         CommandType.SHUTDOWN,
-                        (self.ID, self.nickname),
-                        data,
+                        (self.ID, self.nickname)
                     )
             self.dispatch_q.put(message)
             time.sleep(0.5)
-            self.disconnect_q.put(QueueSignal._disconnect)
         elif data == "c:disc":
             self.disconnect_q.put(QueueSignal._disconnect)
         else:
@@ -389,17 +388,18 @@ class Client(threading.Thread):
                 pass
         self.logger.debug(f"{t.name.lower()} thread terminated.")
         
-    def handle_disconnect(self):
+    def handle_disconnect(self, make_request=True):
         self.logger.info("Disconnecting...")
         self.running = False
         self.logger.debug("Running flag changed: set -> clear.")
-        # send disconnect command to server
-        self.logger.debug("Sending disconnect command to server.")
-        disconnect_cmd = Command(
-                    CommandType.DISCONNECT,
-                    (self.ID, self.nickname),
-                )
-        self.dispatch_q.put(disconnect_cmd)
+        # send disconnect command to server if desirable
+        if make_request:
+            self.logger.debug("Sending disconnect command to server.")
+            disconnect_cmd = Command(
+                        CommandType.DISCONNECT,
+                        (self.ID, self.nickname),
+                    )
+            self.dispatch_q.put(disconnect_cmd)
         # terminate dispatcher thread
         self.terminate_thread(self.dispatch_thread, self.dispatch_q)
         time.sleep(0.5)
@@ -409,6 +409,7 @@ class Client(threading.Thread):
         self.terminate_thread(self.receive_thread)
         # terminate chatbox writer thread
         self.terminate_thread(self.chatbox_thread, self.chatbox_q)
+        self.disconnect_q.put(QueueSignal._disconnect)
         self.logger.debug("Disconnect process finished.")
         self.connected = False
     
@@ -502,14 +503,16 @@ class Client(threading.Thread):
         # wait for disconnect signal
         while self.running:
             signal = self.disconnect_q.get()
-            if signal is QueueSignal._disconnect:
-                self.logger.debug("Got a disconnect signal.")
-                self.handle_disconnect()
-                self.logger.info("Disconnected.")
-                time.sleep(0.1)
-                self.q_listener.stop()
+            if signal is QueueSignal._shutdown:
+                self.logger.info("Server is shutting down.")
+                make_request = False
             else:
-                self.logger.debug("Got a invalid disconnect signal.")
+                self.logger.debug("Got a disconnect signal.")
+                make_request = True 
+            self.handle_disconnect(make_request)
+            self.logger.info("Disconnected.")
+            time.sleep(0.1)
+            self.q_listener.stop()
             self.disconnect_q.task_done()
 
 
