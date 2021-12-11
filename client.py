@@ -3,6 +3,7 @@ from constants import *
 from transfer import NetworkDataTransferer, TCPIPv4DataTransferer
 from cryptographer import Cryptographer, RSAFernetCryptographer
 from logging import LogRecord
+from workers import Worker
 import logger
 
 
@@ -53,58 +54,44 @@ class Client(threading.Thread):
         )
         self.q_listener.respect_handler_level = True
 
-    def write_to_chatbox(self):
-        active = True
-        while active:
-            message = self.chatbox_q.get()
-            if isinstance(message, Message):
-                self.logger.debug(
-                    "Putting message into output queue. "\
-                    f"Message = {message}")
-                self.message_output_q.put(message)
-                print(
-                    f"****** [CHATBOX] [Message ID: {message._id}]",
-                    f"(Client ID: {message._from[0]}) {message._from[1]}:",
-                    f"{message._data} ******"
-                )
-            elif message is QueueSignal._terminate_thread:
-                self.logger.debug("Terminate thread signal received.")
-                active = False
-            else:
-                self.logger.debug(f"Not a message. Content=[{message}]")
-            self.chatbox_q.task_done()
-        self.logger.debug("Exiting chatbox_writer thread persistence loop.")
+    @Worker
+    def write_to_chatbox(self, message):
+        if isinstance(message, Message):
+            self.logger.debug(
+                "Putting message into output queue. "\
+                f"Message = {message}")
+            self.message_output_q.put(message)
+            print(
+                f"****** [CHATBOX] [Message ID: {message._id}]",
+                f"(Client ID: {message._from[0]}) {message._from[1]}:",
+                f"{message._data} ******"
+            )
+        else:
+            self.logger.debug(f"Not a message. Content=[{message}]")
         
     def prepare_msg_to_dispatch(self, msg):
         packed_msg = self.msg_guardian.pack(msg)
         return self.crypt.encrypt(packed_msg)
 
-    def dispatch(self):
-        active = True
-        while active:
-            message = self.dispatch_q.get()
-            if isinstance(message, Message):
-                encrypted_message = None
-                try:
-                    encrypted_message = self.prepare_msg_to_dispatch(message)
-                    self.transfer.send(encrypted_message)
-                    self.logger.debug(
-                        f"{SuccessDescription._SUCCESSFULL_SEND} "\
-                        f"Class=[{message.__class__.__name__}] "\
-                        f"Type=[{message._code}] "\
-                        f"Content: {message._data}"
-                    )
-                except Exception as e:
-                    self.logger.error(ErrorDescription._FAILED_TO_SEND)
-                    args = (encrypted_message, message)
-                    self.handle_exceptions(e, *args)
-                finally:
-                    time.sleep(CLT_SEND_SLEEP_TIME)
-            elif message is QueueSignal._terminate_thread:
-                self.logger.debug("Terminate thread signal received.")
-                active = False
-            self.dispatch_q.task_done()
-        self.logger.debug("Exiting dispatch thread persistence loop.")
+    @Worker
+    def dispatch(self, message):
+        if isinstance(message, Message):
+            encrypted_message = None
+            try:
+                encrypted_message = self.prepare_msg_to_dispatch(message)
+                self.transfer.send(encrypted_message)
+                self.logger.debug(
+                    f"{SuccessDescription._SUCCESSFULL_SEND} "\
+                    f"Class=[{message.__class__.__name__}] "\
+                    f"Type=[{message._code}] "\
+                    f"Content: {message._data}"
+                )
+            except Exception as e:
+                self.logger.error(ErrorDescription._FAILED_TO_SEND)
+                args = (encrypted_message, message)
+                self.handle_exceptions(e, *args)
+            finally:
+                time.sleep(CLT_SEND_SLEEP_TIME)
 
     def handle_broadcast_command(self, command: Command):
         reply = Reply(
@@ -294,34 +281,23 @@ class Client(threading.Thread):
         else:
             self.error_handlers[0](self, e, *args)
 
-    def prepare_incoming_message(self, message):
-        decrypted_message = self.crypt.decrypt(message)
-        return self.msg_guardian.unpack(decrypted_message)
-
-    def handle_incoming_message(self, q: queue.Queue):
-        active = True
-        while active:
-            item = q.get()
-            decrypted_message = message = None 
-            try:
-                message = self.prepare_incoming_message(item)
-                self.incoming_msg_handlers[message._code](self, message)
-            except Exception as e:
-                if item is QueueSignal._terminate_thread:
-                    self.logger.debug("Got terminate signal from the queue.")
-                    active = False
-                else:
-                    self.logger.error(ErrorDescription._FAILED_TO_HANDLE_MSG)
-                    args = (decrypted_message, message)
-                    self.handle_exceptions(e, *args)
-            q.task_done()
-        self.logger.debug("Exiting persistence loop.")
+    @Worker
+    def handle_incoming_message(self, buffer):
+        message = None
+        try:
+            decrypted_message = self.crypt.decrypt(buffer)
+            message = self.msg_guardian.unpack(decrypted_message)
+            self.incoming_msg_handlers[message._code](self, message)
+        except Exception as e:
+            self.logger.error(ErrorDescription._FAILED_TO_HANDLE_MSG)
+            args = (buffer, message)
+            self.handle_exceptions(e, *args)
 
     def handle_receive(self):
         msg_handler_q = queue.Queue()
         message_handler_thread = threading.Thread(
             target=self.handle_incoming_message,
-            args=[msg_handler_q],
+            args=(self, msg_handler_q, self.logger),
             name=f"{self.ID}_MSGHNDLR",
             daemon=True
         )
@@ -480,6 +456,7 @@ class Client(threading.Thread):
         self.logger.debug("Starting chatbox writer thread.")
         self.chatbox_thread = threading.Thread(
             target=self.write_to_chatbox,
+            args=(self, self.chatbox_q, self.logger),
             name="CHATBOX_WRITER"
             )
         self.chatbox_thread.start()
@@ -488,6 +465,7 @@ class Client(threading.Thread):
         self.logger.debug("Starting dispatcher thread.")
         self.dispatch_thread = threading.Thread(
             target=self.dispatch,
+            args=(self, self.dispatch_q, self.logger),
             name="DISPATCHER"
             )
         self.dispatch_thread.start()

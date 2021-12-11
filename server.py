@@ -3,8 +3,9 @@ from message import *
 from constants import *
 from transfer import NetworkDataTransferer, TCPIPv4DataTransferer
 from cryptographer import Cryptographer, RSAFernetCryptographer
+from workers import Worker
+from copy import copy
 import logger
-
 
 class ClientEntry:
     def __init__(
@@ -82,119 +83,87 @@ class Server(threading.Thread):
         )
         self.q_listener.respect_handler_level = True
 
-    def broadcast_enqueuer(self):
-        active = True
-        while active and self.running:
-            message = self.broadcast_q.get()
-            if isinstance(message, Command):
+    @Worker
+    def broadcast_enqueuer(self, message):
+        if isinstance(message, Command):
+            try:
                 packed_message = None
-                client = None
-                try:
-                    packed_message = self.msg_guardian.pack(message)
-                    for client in self.clients.values():
-                        encrypted_message = client.crypt.encrypt(
-                            packed_message
+                client: ClientEntry = None
+                packed_message = self.msg_guardian.pack(message)
+                for client in self.clients.values():
+                    encrypted_message = client.crypt.encrypt(
+                        packed_message
+                    )
+                    self.logger.debug(
+                        "Putting command into dispatch queue."
                         )
-                        self.logger.debug(
-                            "Putting command into dispatch queue."
-                            )
-                        self.dispatch_q.put((
-                            encrypted_message,
-                            client 
-                        ))
+                    self.dispatch_q.put((
+                        encrypted_message,
+                        client 
+                    ))
+            except Exception as e:
+                self.logger.error(
+                    f"{ErrorDescription._FAILED_TO_SEND} "\
+                    f"to client #[{client.ID if client else None}]. "\
+                    f"content = {message._data}"
+                )
+                self.handle_exceptions(
+                    e,
+                    client if client else None,
+                    message,
+                    packed_message if packed_message else None
+                )
+    @Worker 
+    def reply_enqueuer(self, reply):
+        if isinstance(reply, Reply):
+            packed_reply = None
+            encrypted_reply = None
+            try:
+                client = self.clients[reply._to]
+                packed_reply = self.msg_guardian.pack(reply)
+                encrypted_reply = client.crypt.encrypt(
+                    packed_reply
+                )
+                self.logger.debug(
+                    "Putting reply into dispatch queue."
+                )
+                self.dispatch_q.put((
+                    encrypted_reply,
+                    client
+                ))
+            except Exception as e:
+                self.logger.error(
+                    f"{ErrorDescription._FAILED_TO_SEND_REPLY} "\
+                    f"to client #[{client.ID if client else None}]. "\
+                    f"content = {reply._data if reply else None}"
+                )
+                self.handle_exceptions(
+                    e,
+                    client if client else None,
+                    reply,
+                    packed_reply if packed_reply else None
+                )
+    @Worker
+    def dispatch(self, item):
+        if isinstance(item, tuple):
+            data, client = item
+            if isinstance(data, bytes) \
+                and isinstance(client, ClientEntry):
+                self.logger.debug("Sending data.")
+                try:
+                    self.lock.acquire()
+                    client.transfer.send(data)
+                    self.lock.release()
                 except Exception as e:
                     self.logger.error(
                         f"{ErrorDescription._FAILED_TO_SEND} "\
-                        f"to client #[{client.ID if client else None}]. "\
-                        f"content = {message._data}"
+                        f"to client with ID [{client.ID}]."
                     )
-                    self.handle_exceptions(
-                        e,
-                        client if client else None,
-                        message,
-                        packed_message if packed_message else None
-                    )
-            elif message is QueueSignal._terminate_thread:
-                active = False
-                self.logger.debug(
-                    "Got terminate thread signal; "\
-                        "active flag: set -> clear"
-                    )
-            self.broadcast_q.task_done()
-        self.logger.debug("Exiting broadcast thread persistence loop.")
-                
-    def reply_enqueuer(self):
-        active = True
-        while active and self.running:
-            reply = self.reply_q.get()
-            if isinstance(reply, Reply):
-                packed_reply = None
-                encrypted_reply = None
-                try:
-                    client = self.clients[reply._to]
-                    packed_reply = self.msg_guardian.pack(reply)
-                    encrypted_reply = client.crypt.encrypt(
-                        packed_reply
-                    )
-                    self.logger.debug(
-                        "Putting reply into dispatch queue."
-                    )
-                    self.dispatch_q.put((
-                        encrypted_reply,
-                        client
-                    ))
-                except Exception as e:
-                    self.logger.error(
-                        f"{ErrorDescription._FAILED_TO_SEND_REPLY} "\
-                        f"to client #[{client.ID if client else None}]. "\
-                        f"content = {reply._data if reply else None}"
-                    )
-                    self.handle_exceptions(
-                        e,
-                        client if client else None,
-                        reply,
-                        packed_reply if packed_reply else None
-                    )
-            elif reply is QueueSignal._terminate_thread:
-                active = False
-                self.logger.debug(
-                    "Got terminate thread signal; "\
-                        "active flag: set -> clear"
-                    )
-            self.reply_q.task_done()
-        self.logger.debug("Exiting reply thread persistence loop.")
-
-    def dispatch(self):
-        active = True
-        while active and self.running:
-            item = self.dispatch_q.get()
-            if isinstance(item, tuple):
-                data, client = item
-                if isinstance(data, bytes) \
-                    and isinstance(client, ClientEntry):
-                    self.logger.debug("Sending data.")
-                    try:
-                        self.lock.acquire()
-                        client.transfer.send(data)
-                        self.lock.release()
-                    except Exception as e:
-                        self.logger.error(
-                            f"{ErrorDescription._FAILED_TO_SEND} "\
-                            f"to client with ID [{client.ID}]."
-                        )
-                        self.handle_exceptions(e, client, data)
-                    finally:
-                        time.sleep(SRV_SEND_SLEEP_TIME)
-                else:
-                    self.logger.debug(f"Item is not valid. Item = {item}")
-            elif item is QueueSignal._terminate_thread:
-                active = False
-                self.logger.debug(
-                    "Got terminate thread signal; "\
-                        "active flag: set -> clear"
-                    )
-            self.dispatch_q.task_done()
-        self.logger.debug("Exiting dispatch thread persistence loop.")
+                    self.handle_exceptions(e, client, data)
+                finally:
+                    time.sleep(SRV_SEND_SLEEP_TIME)
+            else:
+                self.logger.debug(f"Item is not valid. Item = {item}")
     
     def handle_broadcast_command(self, command: Command):
         reply = Reply(
@@ -359,7 +328,8 @@ class Server(threading.Thread):
     def handle_no_error_handler(self, e: Exception, c: ClientEntry, *args):
         self.logger.debug("".join((
             ErrorDescription._ERROR_NO_HANDLER_DEFINED,
-            f" Error class: {e.__class__.__name__}",
+            f" Error class: {e.__class__.__name__}. ",
+            f"Args: {args}"
         )))
         self.logger.exception(e)
         if isinstance(c, ClientEntry):
@@ -397,51 +367,38 @@ class Server(threading.Thread):
 
     def handle_exceptions(self, e: Exception, *args):
         err = e.__class__.__name__
-        self.logger.debug(
-            f"{err} exception raised. "\
-            f"Sending to handler."
-        )
+        if self.running:
+            self.logger.debug(
+                f"{err} exception raised. "\
+                f"Sending to handler."
+            )
         if err in self.error_handlers:
             self.error_handlers[err](self, e, *args)
         else:
             self.error_handlers[0](self, e, *args)
 
-    def handle_incoming_message(self, client: ClientEntry, q: queue.Queue):
-        active = True
-        while active:
-            item = q.get()
-            if isinstance(item, bytes):
-                decrypted_msg = None
-                message = None
-                try:
-                    decrypted_msg = client.crypt.decrypt(item)
-                    message = self.msg_guardian.unpack(decrypted_msg)
-                    self.message_handlers[message._code](self, message)
-                except Exception as e:
-                    self.logger.error(ErrorDescription._FAILED_TO_HANDLE_MSG)
-                    args = (decrypted_msg, message)
-                    self.handle_exceptions(e, client, *args)
-            elif item is QueueSignal._terminate_thread:
-                self.logger.debug(
-                    "Got terminate signal from the queue. "\
-                    f"Client ID #[{client.ID}]"
-                    )
-                active = False
-            else:
-                self.logger.warning(
-                    f"Got an unexpected item from the queue: {item}"
-                )
-            q.task_done()
-        self.logger.debug(
-            "Exiting persistence loop. "\
-            f"Client ID #[{client.ID}]"
-        )
+    @Worker
+    def handle_incoming_message(self, message, client: ClientEntry):
+        if isinstance(message, bytes):
+            decrypted_msg = None
+            try:
+                decrypted_msg = client.crypt.decrypt(message)
+                message = self.msg_guardian.unpack(decrypted_msg)
+                self.message_handlers[message._code](self, message)
+            except Exception as e:
+                self.logger.error(ErrorDescription._FAILED_TO_HANDLE_MSG)
+                args = (decrypted_msg, message)
+                self.handle_exceptions(e, client, *args)
+        else:
+            self.logger.warning(
+                f"Got an unexpected item from the queue: {message}"
+            )
 
     def handle_client(self, client: ClientEntry):
         msg_handler_q = queue.Queue()
         msg_handler_thread = threading.Thread(
             target=self.handle_incoming_message,
-            args=[client, msg_handler_q],
+            args=(self, msg_handler_q, self.logger, client),
             name=f"{client.ID}_MSGHNDLR",
             daemon=True
         )
@@ -456,11 +413,11 @@ class Server(threading.Thread):
                 self.handle_exceptions(e, client, buffer)
             finally:
                 time.sleep(SRV_RECV_SLEEP_TIME)
-        # stop message handler thread 
         self.logger.debug(
             f"Client active flag changed: set -> clear, "\
             f"Client ID = [{client.ID}]"
             )
+        # stop message handler thread before exiting
         self.terminate_thread(msg_handler_thread, msg_handler_q)
         time.sleep(0.2)
         self.logger.debug(
@@ -471,8 +428,8 @@ class Server(threading.Thread):
     def exchange_keys_with_client(self, transfer_agent: NetworkDataTransferer):
         self.logger.debug("Begining keys exchange with client.")
         self.lock.acquire()
-        client_crypt = self.crypt
-        transfer_agent.send(client_crypt.export_encryption_keys())
+        client_crypt = copy(self.crypt)
+        transfer_agent.send(self.crypt.export_encryption_keys())
         time.sleep(0.1)
         client_crypt.import_decryption_keys(transfer_agent.receive())
         time.sleep(0.1)
@@ -545,7 +502,7 @@ class Server(threading.Thread):
         # create client's thread
         new_client_thread = threading.Thread(
             target=self.handle_client,
-            args=[new_client],
+            args=(new_client,),
             name=f"{new_client.ID}_HANDLER"
         )
         # add client's thread to threads list
@@ -583,6 +540,7 @@ class Server(threading.Thread):
         self.logger.debug("Starting broadcaster thread.")
         self.broadcast_enqueuer_thread = threading.Thread(
             target=self.broadcast_enqueuer,
+            args=(self, self.broadcast_q, self.logger),
             name="BROADCASTER"
             )
         self.broadcast_enqueuer_thread.start()
@@ -591,6 +549,7 @@ class Server(threading.Thread):
         self.logger.debug("Starting replier thread.")
         self.reply_enqueuer_thread = threading.Thread(
             target=self.reply_enqueuer,
+            args=(self, self.reply_q, self.logger),
             name="REPLIER"
             )
         self.reply_enqueuer_thread.start()
@@ -599,6 +558,7 @@ class Server(threading.Thread):
         self.logger.debug("Starting dispatcher thread.")
         self.dispatch_thread = threading.Thread(
             target=self.dispatch,
+            args=(self, self.dispatch_q, self.logger),
             name="DISPATCHER"
             )
         self.dispatch_thread.start()

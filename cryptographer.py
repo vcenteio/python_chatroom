@@ -89,7 +89,7 @@ class RSAFernetCryptographer(Cryptographer):
         try:
             return self.rsa_decrypt_b(self.d_fernet.decrypt(data))
         except (InvalidToken, InvalidSignature) as e:
-            self.logger.debug(e)
+            self.logger.exception(e)
             raise EncryptionError(e)
 
     @staticmethod
