@@ -1,6 +1,6 @@
 ﻿from constants import *
 from message import *
-from logging import handlers, LogRecord
+from logging import handlers
 from transfer import NetworkDataTransferer, TCPIPv4DataTransferer
 from cryptographer import Cryptographer, RSAFernetCryptographer
 from workers import Worker
@@ -11,6 +11,7 @@ from queue import Queue, Empty
 import threading
 import logger
 import random
+import struct
 
 
 @dataclass
@@ -71,10 +72,6 @@ class Server(Thread):
         self.client_id_ctrl_set.add(rand)
         return rand
 
-    def exception_filter(self, record: LogRecord):
-        if "Traceback" in record.msg:
-            return False
-        return True
 
     def setup_logger(self):
         self.logger = logger.get_new_logger(self.name)
@@ -82,7 +79,6 @@ class Server(Thread):
             handlers.QueueHandler(self.logging_q)
         )
         stream_handler = logger.get_stream_handler()
-        stream_handler.addFilter(self.exception_filter)
         file_handler = logger.get_file_handler(self.name)
         self.q_listener = handlers.QueueListener(
             self.logging_q,
@@ -227,6 +223,9 @@ class Server(Thread):
             f"Content = '{reply._data}'"
         )
 
+    def handle_wrong_type_error(self, e: Exception, c: ClientEntry, *args):
+        self.logger.error(e)
+
     def handle_pack_error(self, e: Exception, c: ClientEntry, *args):
         message = args[0]
         self.logger.error(
@@ -254,9 +253,9 @@ class Server(Thread):
         self.logger.debug(e)
     
     def handle_encryption_error(self, e: Exception, c: ClientEntry, *args):
-        self.logger.error(ErrorDescription._MSG_DECRYPT_ERROR)
+        self.logger.error(ErrorDescription._CRYPTOGRAPHER_ERROR)
         self.logger.debug(e)
-        if c:
+        if c and c.is_active():
             c.errors_count += 1
             if c.errors_count > CRITICAL_ERRORS_MAX_NUMBER:
                 self.logger.debug(
@@ -265,27 +264,34 @@ class Server(Thread):
                 )
                 self.disconnect_client(c)
                 time.sleep(0.1)
+    
+    def handle_guardian_error(self, e: Exception, c: ClientEntry, *args):
+        self.logger.error(e)
+        given_args = args if args else None
+        self.logger.debug(f"Client ID [{c._id}] ; Args: {given_args}")
 
     def handle_integrity_fail(self, e: Exception, c: ClientEntry, *args):
-        self.logger.error(
-                f"{ErrorDescription._INTEGRITY_FAILURE} "\
-                f"Client ID = [{c._id if c else None}] "
-        )
-        reply = Reply(
-                    ReplyType.ERROR,
-                    (self._id, self.name),
-                    ReplyDescription._INTEGRITY_FAILURE,
-                    _to=c._id
-                )
-        self.reply_q.put(reply)
-        c.errors_count += 1
-        if c.errors_count > CRITICAL_ERRORS_MAX_NUMBER:
-            self.logger.debug(
-                "Too many integrity errors. "\
-                f"Disconnecting client with ID [{c._id}]"
+        if c and c.is_active():
+            c.errors_count += 1
+            self.logger.error(
+                    f"{ErrorDescription._INTEGRITY_FAILURE} "\
+                    f"Client ID = [{c._id if c else None}] "
             )
-            self.disconnect_client(c)
-            time.sleep(0.1)
+            self.logger.debug(e)
+            reply = Reply(
+                        ReplyType.ERROR,
+                        (self._id, self.name),
+                        ReplyDescription._INTEGRITY_FAILURE,
+                        _to=c._id
+                    )
+            self.reply_q.put(reply)
+            if c.errors_count > CRITICAL_ERRORS_MAX_NUMBER:
+                self.logger.debug(
+                    "Too many integrity errors. "\
+                    f"Disconnecting client with ID [{c._id}]"
+                )
+                self.disconnect_client(c)
+                time.sleep(0.1)
     
     def handle_invalid_message_code(self, e: Exception, c: ClientEntry, *args):
         self.logger.error(
@@ -303,30 +309,30 @@ class Server(Thread):
         )
     
     def handle_receive_error(self, e: Exception, c: ClientEntry, *args):
-        self.logger.error(ErrorDescription._FAILED_RECV)
-        self.logger.debug(e)
-        reply = Reply(
-                    ReplyType.ERROR,
-                    (self._id, self.name),
-                    ErrorDescription._FAILED_RECV,
-                    _to=c._id,
-                )
-        self.reply_q.put(reply)
-        c.errors_count += 1
-        if c.errors_count > CRITICAL_ERRORS_MAX_NUMBER:
-            self.logger.debug(ErrorDescription._TOO_MANY_ERRORS)
-            self.disconnect_client(c)
-            time.sleep(0.1)
+        if c.is_active():
+            c.errors_count += 1
+            self.logger.error(ErrorDescription._FAILED_RECV)
+            self.logger.debug(e)
+            reply = Reply(
+                        ReplyType.ERROR,
+                        (self._id, self.name),
+                        ErrorDescription._FAILED_RECV,
+                        _to=c._id,
+                    )
+            self.reply_q.put(reply)
+            if c.errors_count > CRITICAL_ERRORS_MAX_NUMBER:
+                    self.logger.error(ErrorDescription._TOO_MANY_ERRORS)
+                    self.disconnect_client(c)
+                    time.sleep(0.1)
 
     def handle_critical_error(self, e: Exception, c: ClientEntry, *args):
-        if c:
-            if c.is_active():
-                self.logger.error(
-                    f"Client with ID [{c._id}] "\
-                    "disconnected unexpectedly."
-                )
-                self.logger.debug(f"Description: {e}")
-                self.disconnect_client(c)
+        if c and c.is_active():
+            self.logger.error(
+                f"Client with ID [{c._id}] "\
+                "disconnected unexpectedly."
+            )
+            self.logger.debug(f"{e}. Args: {args if args else None}")
+            self.disconnect_client(c)
     
     def handle_bad_connect_request(self, e: Exception, c: ClientEntry, *args):
         if self.running:
@@ -363,11 +369,14 @@ class Server(Thread):
         InvalidDataForEncryption.__name__ : handle_encryption_error,
         InvalidRSAKey.__name__ : handle_encryption_error,
         NullData.__name__ : handle_encryption_error,
-        NonBytesData.__name__ : handle_encryption_error,
+        NonBytesData.__name__ : handle_wrong_type_error,
         EncryptionError.__name__ : handle_encryption_error,
+        MessagePackError.__name__ : handle_guardian_error,
+        MessageUnpackError.__name__ : handle_guardian_error,
         IntegrityCheckFailed.__name__ : handle_integrity_fail,
         KeyError.__name__ : handle_invalid_message_code,
         ReceiveError.__name__ : handle_receive_error,
+        SendError.__name__ : handle_send_error,
         CriticalTransferError.__name__ : handle_critical_error,
         OSError.__name__: handle_bad_connect_request,
         0 : handle_no_error_handler

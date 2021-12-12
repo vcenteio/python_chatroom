@@ -7,6 +7,7 @@ from workers import Worker
 from queue import Queue, Empty
 from threading import Thread, Lock
 import logger
+import struct
 
 
 class Client(Thread):
@@ -23,7 +24,7 @@ class Client(Thread):
         self.crypt = cryptographer
         self.msg_guardian = msg_guardian
 
-    ID: int() 
+    _id: int 
     address: tuple 
     running: bool
     logging_q = Queue()
@@ -98,7 +99,7 @@ class Client(Thread):
     def handle_broadcast_command(self, command: Command):
         reply = Reply(
             ReplyType.SUCCESS,
-            (self.ID, self.nickname),
+            (self._id, self.nickname),
             ReplyDescription._SUCCESSFULL_RECV,
             _to=SERVER_ID,
             _message_id=command._id,
@@ -147,30 +148,40 @@ class Client(Thread):
         )
         reply = Reply(
                     ReplyType.ERROR,
-                    (self.ID, self.nickname),
+                    (self._id, self.nickname),
                     ReplyDescription._UNKNOWN_MSG_TYPE,
                     _to=SERVER_ID,
                 )
         self.dispatch_q.put(reply)
     
+    def handle_wrong_type_error(self, e: Exception, *args):
+        self.logger.error(e)
+
+    def handle_guardian_error(self, e: Exception, *args):
+        self.logger.error(e)
+        given_args = args if args else None
+        self.logger.debug(f"Args: {given_args}")
+
     def handle_integrity_fail(self, e: Exception, *args):
-        self.logger.error(ErrorDescription._FAILED_RECV)
-        self.logger.debug(ErrorDescription._INTEGRITY_FAILURE)
-        reply = Reply(
-                    ReplyType.ERROR,
-                    (self.ID, self.nickname),
-                    ReplyDescription._INTEGRITY_FAILURE,
-                    _to=SERVER_ID,
-                )
-        self.dispatch_q.put(reply)
+        if self.running:
+            self.logger.error(ErrorDescription._INTEGRITY_FAILURE)
+            self.logger.debug(f"{e}. Args: {args if args else None}")
+            reply = Reply(
+                        ReplyType.ERROR,
+                        (self._id, self.nickname),
+                        ReplyDescription._INTEGRITY_FAILURE,
+                        _to=SERVER_ID,
+                    )
+            self.dispatch_q.put(reply)
 
     def handle_encryption_error(self, e: Exception, *args):
-        self.logger.error(ErrorDescription._MSG_DECRYPT_ERROR)
-        self.logger.debug(e)
-        self.errors_count += 1
-        if self.errors_count > CRITICAL_ERRORS_MAX_NUMBER:
-            self.logger.debug("Too many encryption errors")
-            self.disconnect_q.put(QueueSignal._disconnect)
+        if self.running:
+            self.logger.error(ErrorDescription._CRYPTOGRAPHER_ERROR)
+            self.logger.debug(e)
+            self.errors_count += 1
+            if self.errors_count > CRITICAL_ERRORS_MAX_NUMBER:
+                self.logger.critical("Too many encryption errors")
+                self.disconnect_q.put(QueueSignal._disconnect)
 
     def handle_invalid_message_code(self, e: Exception, *args):
         self.logger.error(
@@ -194,27 +205,28 @@ class Client(Thread):
 
 
     def handle_receive_error(self, e: Exception, *args):
-        if self.errors_count > CRITICAL_ERRORS_MAX_NUMBER:
-            if self.running:
+        if self.running:
+            self.errors_count += 1
+            if self.errors_count > CRITICAL_ERRORS_MAX_NUMBER:
                 self.logger.critical(
                     ErrorDescription._LOST_CONNECTION_W_SRV
                 )
-                self.logger.debug(f"Errors count = {self.errors_count}")
+                self.logger.debug(e)
                 self.disconnect_q.put(QueueSignal._disconnect)
-            time.sleep(0.05)
-        elif self.running:
-            self.logger.error(ErrorDescription._FAILED_RECV)
-            self.logger.debug(e)
-            reply = Reply(
-                        ReplyType.ERROR,
-                        (self.ID, self.nickname),
-                        ErrorDescription._FAILED_RECV,
-                        _to=SERVER_ID,
-                    )
-            self.dispatch_q.put(reply)
-        self.errors_count += 1
+                time.sleep(0.05)
+            else:
+                self.logger.error(ErrorDescription._FAILED_RECV)
+                self.logger.debug(e)
+                reply = Reply(
+                            ReplyType.ERROR,
+                            (self._id, self.nickname),
+                            ErrorDescription._FAILED_RECV,
+                            _to=SERVER_ID,
+                        )
+                self.dispatch_q.put(reply)
 
     def handle_critical_error(self, e: Exception, *args):
+        self.logger.error(ErrorDescription._CRITICAL_ERROR)
         self.logger.debug(e)
         self.errors_count += 1
         if self.errors_count > CRITICAL_ERRORS_MAX_NUMBER:
@@ -261,9 +273,12 @@ class Client(Thread):
         InvalidDataForEncryption.__name__ : handle_encryption_error,
         EncryptionError.__name__ : handle_encryption_error,
         TypeError.__name__ : handle_encryption_error,
+        MessagePackError.__name__ : handle_guardian_error,
+        MessageUnpackError.__name__ : handle_guardian_error,
         IntegrityCheckFailed.__name__ : handle_integrity_fail,
         KeyError.__name__ : handle_invalid_message_code,
         SendError.__name__ : handle_send_error,
+        NonBytesData.__name__ : handle_wrong_type_error,
         ReceiveError.__name__ : handle_receive_error,
         CriticalTransferError.__name__ : handle_critical_error,
         ConnectionRefusedError.__name__ : handle_connect_error,
@@ -301,7 +316,7 @@ class Client(Thread):
         message_handler_thread = Thread(
             target=self.handle_incoming_message,
             args=(self, msg_handler_q, self.logger),
-            name=f"{self.ID}_MSGHNDLR",
+            name=f"{self._id}_MSGHNDLR",
             daemon=True
         )
         message_handler_thread.start()
@@ -327,7 +342,7 @@ class Client(Thread):
         if data == "c:shut":
             message = Command(
                         CommandType.SHUTDOWN,
-                        (self.ID, self.nickname)
+                        (self._id, self.nickname)
                     )
             self.dispatch_q.put(message)
             time.sleep(0.5)
@@ -336,7 +351,7 @@ class Client(Thread):
         else:
             message = Command(
                         CommandType.BROADCAST,
-                        (self.ID, self.nickname),
+                        (self._id, self.nickname),
                         data.strip(),
                         _nick_color=self.color
                     )
@@ -399,7 +414,7 @@ class Client(Thread):
             self.logger.debug("Sending disconnect command to server.")
             disconnect_cmd = Command(
                         CommandType.DISCONNECT,
-                        (self.ID, self.nickname),
+                        (self._id, self.nickname),
                     )
             self.dispatch_q.put(disconnect_cmd)
         # terminate dispatcher thread
@@ -446,13 +461,13 @@ class Client(Thread):
 
         # receive ID generated by the server
         self.logger.debug("Waiting for my ID.")
-        self.ID =   struct.unpack("<I",
+        self._id =   struct.unpack("<I",
                         self.crypt.decrypt(
                             self.transfer.receive()
                         )
                     )[0]
         self.lock.release()
-        self.logger.debug(f"My ID: {self.ID}")
+        self.logger.debug(f"My ID: {self._id}")
         self.logger.debug("Setup data exchange completed.")
 
     def setup_worker_threads(self):

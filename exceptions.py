@@ -46,12 +46,18 @@ class NullData(ValueError):
 
 class NonBytesData(TypeError):
     def __init__(self, msg, type):
-        self.msg = msg if msg else f"Wrong type: ({type}). Should be bytes."
+        self.msg = msg if msg else f"Wrong type: {type}. Should be bytes."
         super().__init__(self.msg)
 
 # pack/unpack errors
+class MessagePackError(Exception):
+    def __init__(self, msg):
+        self.msg = msg if msg else "Unable to pack message."
+        super().__init__(self.msg)
+
 class MessageUnpackError(Exception):
     def __init__(self, msg, *args):
+        self.msg = msg if msg else f"Unable to unpack message. Args: {args}"
         super().__init__(msg, *args)
 
 class UnknownMessageType(MessageUnpackError):
@@ -66,14 +72,8 @@ class MessageWithNoType(MessageUnpackError):
 
 class IntegrityCheckFailed(MessageUnpackError):
     def __init__(self, msg):
-        self.msg = msg if msg else "HMAC integrity check failed."
+        self.msg = msg if msg else "Integrity check failed."
         super().__init__(self.msg)
-
-class MessagePackError(Exception):
-    def __init__(self, msg):
-        self.msg = msg if msg else "Unable to pack message."
-        super().__init__(self.msg)
-
 
 # encryption errors
 class EncryptionError(ValueError):

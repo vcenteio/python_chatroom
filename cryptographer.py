@@ -8,6 +8,8 @@ from base64 import urlsafe_b64encode, urlsafe_b64decode
 from secrets import token_bytes
 import random
 import math
+import struct
+
 
 class Cryptographer(ABC):
     logger: logging.Logger
@@ -27,6 +29,7 @@ class Cryptographer(ABC):
     @abstractmethod
     def import_keys(self, _buffer: bytes) -> bytes:
         ...
+
 
 class RSAFernetCryptographer(Cryptographer):
     def __init__(
@@ -80,13 +83,16 @@ class RSAFernetCryptographer(Cryptographer):
             self.logger.debug(f"Imported Fernet key: {self.e_fernet_key}")
 
     def encrypt(self, data: bytes) -> bytes:
+        if not self.e_fernet_key or not self.e_public_key:
+            raise EncryptionError("Encryption keys not set.")
         return self.e_fernet.encrypt(self.rsa_encrypt_b(data))
 
     def decrypt(self, data: bytes) -> bytes:
         try:
             return self.rsa_decrypt_b(self.d_fernet.decrypt(data))
         except (InvalidToken, InvalidSignature) as e:
-            self.logger.exception(e)
+            self.logger.debug(ErrorDescription._MSG_DECRYPT_ERROR)
+            self.logger.debug(e)
             raise EncryptionError(e)
 
     @staticmethod

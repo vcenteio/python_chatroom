@@ -1,4 +1,4 @@
-﻿from logging import Logger, Formatter
+﻿from logging import Logger, Formatter, LogRecord
 from constants import *
 
 
@@ -12,6 +12,10 @@ formatter = logging.Formatter(
     "%(funcName)s | %(message)s"
     )
 
+def exception_filter(record: LogRecord):
+    if "Traceback" in record.msg:
+        return False
+    return True
 
 def get_new_logger(name: str, parent_logger: Logger = root_logger):
     return parent_logger.getChild(name.upper())
@@ -21,6 +25,7 @@ def get_stream_handler(formatter: Formatter = formatter):
     stream_handler = logging.StreamHandler()
     stream_handler.setLevel(logging.INFO)
     stream_handler.setFormatter(formatter)
+    stream_handler.addFilter(exception_filter)
     return stream_handler
 
 

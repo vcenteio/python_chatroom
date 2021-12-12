@@ -76,9 +76,12 @@ class ErrorDescription():
     _MSG_PACK_ERROR = "Failed to pack message."
     _MSG_UNPACK_ERROR = "error unpacking message"
     _MSG_DECRYPT_ERROR = "Error while decrypting message."
+    _CRYPTOGRAPHER_ERROR = "An error ocurred with the cryptographer."
     _ERROR_NO_HANDLER_DEFINED = "An error ocurred for which "\
                                 "there is no defined handler."
     _TOO_MANY_ERRORS = "Too many errors occured."
+    _WRONG_TYPE = "Wrong type."
+    _CRITICAL_ERROR = "A critical connection error ocurred."
 
 
 class QueueSignal(Enum):
@@ -170,7 +173,8 @@ class DictBasedMessageFactory(MessageFactory):
             return self.type_handlers[_type](msg_dict)
         except KeyError as e:
             raise UnknownMessageType(
-                f"{ErrorDescription._UNKNOWN_MSG_TYPE} {e}"
+                f"{ErrorDescription._UNKNOWN_MSG_TYPE}. "\
+                f"Description: {e}"
             )
 
 class MessageGuardian(ABC):
@@ -217,7 +221,8 @@ class HMACMessageGuardian(MessageGuardian):
         try:
             serialized = json.dumps(message.__dict__).encode()
         except AttributeError as e:
-            raise MessagePackError(e)
+            self.logger.debug(e)
+            raise MessagePackError
         hash = hmac.new(self.hmac_key, serialized, hashlib.sha256).digest()
         return b"".join((hash, serialized))
 
@@ -226,12 +231,19 @@ class HMACMessageGuardian(MessageGuardian):
         msg_buffer = data[self.HASH_SIZE:] 
         new_hash = hmac.new(self.hmac_key, msg_buffer, hashlib.sha256).digest()
         if msg_hash == new_hash:
-            msg_dict = json.loads(msg_buffer)
-            return self.message_factory.create(msg_dict)
+            try:
+                msg_dict = json.loads(msg_buffer)
+                return self.message_factory.create(msg_dict)
+            except (MessageWithNoType, UnknownMessageType) as e:
+                self.logger.debug(e)
+                args = {"msg_buffer": msg_buffer, "msg_dict": msg_dict}
+                raise MessageUnpackError(None, args)
         else:
-            raise IntegrityCheckFailed(
-                ErrorDescription._INTEGRITY_FAILURE
+            self.logger.debug(
+                "Given hash does not match message hash. "\
+                f"Given hash: {new_hash} ; message hash: {msg_hash}"
             )
+            raise IntegrityCheckFailed
 
     def generate_key(self):
         return secrets.token_bytes(self.HASH_SIZE)
