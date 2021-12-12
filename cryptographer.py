@@ -1,13 +1,10 @@
-﻿from abc import ABC, abstractmethod
-from constants import *
-from exceptions import *
+﻿from constants import *
 from message import *
-from cryptography.fernet import InvalidToken
-from cryptography.fernet import Fernet
+from exceptions import *
+from abc import ABC, abstractmethod
+from cryptography.fernet import Fernet, InvalidToken
 from cryptography.exceptions import *
-import base64
 from base64 import urlsafe_b64encode, urlsafe_b64decode
-import secrets
 from secrets import token_bytes
 import random
 import math
@@ -24,11 +21,11 @@ class Cryptographer(ABC):
         ...
     
     @abstractmethod
-    def export_encryption_keys(self) -> bytes:
+    def export_keys(self) -> bytes:
         ...
     
     @abstractmethod
-    def import_decryption_keys(self, _buffer: bytes) -> bytes:
+    def import_keys(self, _buffer: bytes) -> bytes:
         ...
 
 class RSAFernetCryptographer(Cryptographer):
@@ -50,7 +47,7 @@ class RSAFernetCryptographer(Cryptographer):
     ) 
     BYTES_SEPARATOR = b"$_-_$"
 
-    def export_encryption_keys(self) -> bytes:
+    def export_keys(self) -> bytes:
         if self.logger:
             self.logger.debug("Exporting encryption keys.")
             self.logger.debug(f"RSA key: {self.public_key}")
@@ -64,7 +61,7 @@ class RSAFernetCryptographer(Cryptographer):
         )
         return b"".join([prefix, temp_key, encrypted_keys, sufix])
     
-    def import_decryption_keys(self, _buffer: bytes) -> bytes:
+    def import_keys(self, _buffer: bytes) -> bytes:
         temp_key_pos_start = self.ENC_DUMMY_SZ
         temp_key_pos_end = temp_key_pos_start + self.F_KEY_SZ
         enc_keys_pos_start = temp_key_pos_end
@@ -94,7 +91,7 @@ class RSAFernetCryptographer(Cryptographer):
 
     @staticmethod
     def generate_fernet_key():
-        return urlsafe_b64encode(secrets.token_bytes(32))
+        return urlsafe_b64encode(token_bytes(32))
 
     @staticmethod
     def generate_rsa_keys():

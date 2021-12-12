@@ -2,15 +2,16 @@
 from constants import *
 from transfer import NetworkDataTransferer, TCPIPv4DataTransferer
 from cryptographer import Cryptographer, RSAFernetCryptographer
-from logging import LogRecord
+from logging import LogRecord, handlers
 from workers import Worker
+from queue import Queue, Empty
+from threading import Thread, Lock
 import logger
 
 
-class Client(threading.Thread):
+class Client(Thread):
     def __init__(self, nickname: str, color: str, server_address: tuple,
-    data_transferer: NetworkDataTransferer,
-    cryptographer: Cryptographer,
+    data_transferer: NetworkDataTransferer, cryptographer: Cryptographer,
     msg_guardian: MessageGuardian
     ):
         super().__init__()
@@ -25,12 +26,12 @@ class Client(threading.Thread):
     ID: int() 
     address: tuple 
     running: bool
-    logging_q = queue.Queue()
-    dispatch_q = queue.Queue()
-    chatbox_q = queue.Queue()
-    disconnect_q = queue.Queue()
-    message_output_q = queue.Queue()
-    lock = threading.Lock()
+    logging_q = Queue()
+    dispatch_q = Queue()
+    chatbox_q = Queue()
+    disconnect_q = Queue()
+    message_output_q = Queue()
+    lock = Lock()
     errors_count = 0
     connected = False
 
@@ -60,7 +61,8 @@ class Client(threading.Thread):
             self.logger.debug(
                 "Putting message into output queue. "\
                 f"Message = {message}")
-            self.message_output_q.put(message)
+            if self.connected:
+                self.message_output_q.put(message)
             print(
                 f"****** [CHATBOX] [Message ID: {message._id}]",
                 f"(Client ID: {message._from[0]}) {message._from[1]}:",
@@ -295,8 +297,8 @@ class Client(threading.Thread):
             self.handle_exceptions(e, *args)
 
     def handle_receive(self):
-        msg_handler_q = queue.Queue()
-        message_handler_thread = threading.Thread(
+        msg_handler_q = Queue()
+        message_handler_thread = Thread(
             target=self.handle_incoming_message,
             args=(self, msg_handler_q, self.logger),
             name=f"{self.ID}_MSGHNDLR",
@@ -356,17 +358,17 @@ class Client(threading.Thread):
             self.handle_exceptions(e, server_ip, server_port)
             return False
 
-    def consume_queue(self, q: queue.Queue, thread_name):
+    def consume_queue(self, q: Queue, thread_name):
         try:
             while not q.empty:
                 _ = q.get()
                 self.logger.debug(f"Queue item: {_}")
                 q.task_done()
-        except queue.Empty:
+        except Empty:
             pass
         self.logger.debug(f"{thread_name} queue consumed.")
 
-    def terminate_thread(self, t: threading.Thread, q: queue.Queue = None):
+    def terminate_thread(self, t: Thread, q: Queue = None):
         tn = t.name.lower()
         if q:
             if t.is_alive():
@@ -416,9 +418,9 @@ class Client(threading.Thread):
     def exchange_keys_with_server(self):
         self.logger.debug("Begining keys exchange with server.")
         self.lock.acquire()
-        self.crypt.import_decryption_keys(self.transfer.receive())
+        self.crypt.import_keys(self.transfer.receive())
         time.sleep(0.1)
-        self.transfer.send(self.crypt.export_encryption_keys())
+        self.transfer.send(self.crypt.export_keys())
         time.sleep(0.1)
         self.msg_guardian.set_key(
             self.crypt.decrypt(self.transfer.receive())
@@ -455,7 +457,7 @@ class Client(threading.Thread):
 
     def setup_worker_threads(self):
         self.logger.debug("Starting chatbox writer thread.")
-        self.chatbox_thread = threading.Thread(
+        self.chatbox_thread = Thread(
             target=self.write_to_chatbox,
             args=(self, self.chatbox_q, self.logger),
             name="CHATBOX_WRITER"
@@ -464,7 +466,7 @@ class Client(threading.Thread):
         self.logger.debug("Chatbox writer thread started.")
 
         self.logger.debug("Starting dispatcher thread.")
-        self.dispatch_thread = threading.Thread(
+        self.dispatch_thread = Thread(
             target=self.dispatch,
             args=(self, self.dispatch_q, self.logger),
             name="DISPATCHER"
@@ -473,7 +475,7 @@ class Client(threading.Thread):
         self.logger.debug("Dispatcher thread started.")
 
         self.logger.debug("Starting receiver thread.")
-        self.receive_thread = threading.Thread(
+        self.receive_thread = Thread(
             target=self.handle_receive,
             name="RECEIVER"
             )

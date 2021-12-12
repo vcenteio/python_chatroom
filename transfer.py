@@ -3,6 +3,8 @@ from message import *
 from abc import ABC, abstractmethod
 from logging import Logger
 from socket import socket as socket, AF_INET, SOCK_STREAM, SHUT_RDWR
+import select
+
 
 class NetworkDataTransferer(ABC):
     '''

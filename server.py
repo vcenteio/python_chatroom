@@ -1,36 +1,44 @@
-﻿from logging import handlers, LogRecord
+﻿from constants import *
 from message import *
-from constants import *
+from logging import handlers, LogRecord
 from transfer import NetworkDataTransferer, TCPIPv4DataTransferer
 from cryptographer import Cryptographer, RSAFernetCryptographer
 from workers import Worker
+from dataclasses import dataclass
 from copy import copy
+from threading import Thread, Lock
+from queue import Queue, Empty
+import threading
 import logger
+import random
 
+
+@dataclass
 class ClientEntry:
-    def __init__(
-            self, transfer_agent: NetworkDataTransferer,
-            address: tuple, nickname: str, color: str, _id: int,
-            crypt: Cryptographer,
-            msg_guardian: MessageGuardian
-        ):
-        self.transfer = transfer_agent
-        self.address = address
-        self.nickname = nickname
-        self.color = color
-        self.ID = _id
-        self.crypt = crypt 
-        self.msg_guardian = msg_guardian
 
-    active: bool
-    thread_id: int
-    errors_count = 0
+    _id: int
+    address: tuple[str, int]
+    nickname: str
+    color: str
+    transfer: NetworkDataTransferer
+    crypt: Cryptographer
+    msg_guardian: MessageGuardian
+
+    def __post_init__(self):
+        self.active: bool = False
+        self.errors_count: int = 0
         
+    def is_active(self):
+        return self.active
+    
+    def set_state(self, *, active=True):
+        self.active = active
+
     def __str__(self):
         return f"({self.nickname}, {self.address})"
 
 
-class Server(threading.Thread):
+class Server(Thread):
     def __init__(self,
         data_transferer: NetworkDataTransferer,
         cryptographer: Cryptographer,
@@ -45,15 +53,15 @@ class Server(threading.Thread):
     _id = SERVER_ID
     clients = dict()
     client_threads = dict() 
-    dispatch_q = queue.Queue()
-    broadcast_q = queue.Queue()
-    reply_q = queue.Queue()
-    shutdown_q = queue.Queue()
-    lock = threading.Lock()
+    dispatch_q = Queue()
+    broadcast_q = Queue()
+    reply_q = Queue()
+    shutdown_q = Queue()
+    lock = Lock()
     client_id_ctrl_set = set()
     address: tuple 
     running: bool
-    logging_q = queue.Queue()
+    logging_q = Queue()
 
     def generate_client_id(self):
         while True:
@@ -104,7 +112,7 @@ class Server(threading.Thread):
             except Exception as e:
                 self.logger.error(
                     f"{ErrorDescription._FAILED_TO_SEND} "\
-                    f"to client #[{client.ID if client else None}]. "\
+                    f"to client #[{client._id if client else None}]. "\
                     f"content = {message._data}"
                 )
                 self.handle_exceptions(
@@ -134,7 +142,7 @@ class Server(threading.Thread):
             except Exception as e:
                 self.logger.error(
                     f"{ErrorDescription._FAILED_TO_SEND_REPLY} "\
-                    f"to client #[{client.ID if client else None}]. "\
+                    f"to client #[{client._id if client else None}]. "\
                     f"content = {reply._data if reply else None}"
                 )
                 self.handle_exceptions(
@@ -157,7 +165,7 @@ class Server(threading.Thread):
                 except Exception as e:
                     self.logger.error(
                         f"{ErrorDescription._FAILED_TO_SEND} "\
-                        f"to client with ID [{client.ID}]."
+                        f"to client with ID [{client._id}]."
                     )
                     self.handle_exceptions(e, client, data)
                 finally:
@@ -237,7 +245,7 @@ class Server(threading.Thread):
                     ReplyType.ERROR,
                     (self._id, self.name),
                     ErrorDescription._UNKNOWN_MSG_TYPE,
-                    _to=c.ID
+                    _to=c._id
                 )
         self.reply_q.put(reply)
     
@@ -253,7 +261,7 @@ class Server(threading.Thread):
             if c.errors_count > CRITICAL_ERRORS_MAX_NUMBER:
                 self.logger.debug(
                     "Too many encryption errors. "\
-                    f"Disconnecting client with ID [{c.ID}]"
+                    f"Disconnecting client with ID [{c._id}]"
                 )
                 self.disconnect_client(c)
                 time.sleep(0.1)
@@ -261,20 +269,20 @@ class Server(threading.Thread):
     def handle_integrity_fail(self, e: Exception, c: ClientEntry, *args):
         self.logger.error(
                 f"{ErrorDescription._INTEGRITY_FAILURE} "\
-                f"Client ID = [{c.ID if c else None}] "
+                f"Client ID = [{c._id if c else None}] "
         )
         reply = Reply(
                     ReplyType.ERROR,
                     (self._id, self.name),
                     ReplyDescription._INTEGRITY_FAILURE,
-                    _to=c.ID
+                    _to=c._id
                 )
         self.reply_q.put(reply)
         c.errors_count += 1
         if c.errors_count > CRITICAL_ERRORS_MAX_NUMBER:
             self.logger.debug(
                 "Too many integrity errors. "\
-                f"Disconnecting client with ID [{c.ID}]"
+                f"Disconnecting client with ID [{c._id}]"
             )
             self.disconnect_client(c)
             time.sleep(0.1)
@@ -283,14 +291,14 @@ class Server(threading.Thread):
         self.logger.error(
             f"{ErrorDescription._INVALID_MSG_CODE} "\
             f"Message code = {args[1]._code} "\
-            f"Client ID = [{c.ID}]"
+            f"Client ID = [{c._id}]"
         )
 
     def handle_send_error(self, e: Exception, c: ClientEntry, *args):
         message = args[0]
         self.logger.debug(
             f"Could not send message '{message}', "\
-            f"Client ID [{c.ID}], "\
+            f"Client ID [{c._id}], "\
             f"Description: {e}"
         )
     
@@ -301,7 +309,7 @@ class Server(threading.Thread):
                     ReplyType.ERROR,
                     (self._id, self.name),
                     ErrorDescription._FAILED_RECV,
-                    _to=c.ID,
+                    _to=c._id,
                 )
         self.reply_q.put(reply)
         c.errors_count += 1
@@ -312,9 +320,9 @@ class Server(threading.Thread):
 
     def handle_critical_error(self, e: Exception, c: ClientEntry, *args):
         if c:
-            if c.active:
+            if c.is_active():
                 self.logger.error(
-                    f"Client with ID [{c.ID}] "\
+                    f"Client with ID [{c._id}] "\
                     "disconnected unexpectedly."
                 )
                 self.logger.debug(f"Description: {e}")
@@ -395,44 +403,44 @@ class Server(threading.Thread):
             )
 
     def handle_client(self, client: ClientEntry):
-        msg_handler_q = queue.Queue()
-        msg_handler_thread = threading.Thread(
+        msg_handler_q = Queue()
+        msg_handler_thread = Thread(
             target=self.handle_incoming_message,
             args=(self, msg_handler_q, self.logger, client),
-            name=f"{client.ID}_MSGHNDLR",
+            name=f"{client._id}_MSGHNDLR",
             daemon=True
         )
         msg_handler_thread.start()
-        while client.active:
+        while client.is_active():
             buffer = None
             try:
                 buffer = client.transfer.receive()
                 msg_handler_q.put(buffer)
             except Exception as e:
-                if client.active:
+                if client.is_active():
                     self.logger.error(ErrorDescription._FAILED_RECV)
                     self.handle_exceptions(e, client, buffer)
             finally:
                 time.sleep(SRV_RECV_SLEEP_TIME)
         self.logger.debug(
             f"Client active flag changed: set -> clear, "\
-            f"Client ID = [{client.ID}]"
+            f"Client ID = [{client._id}]"
             )
         # stop message handler thread before exiting
         self.terminate_thread(msg_handler_thread, msg_handler_q)
         time.sleep(0.2)
         self.logger.debug(
             f"Exiting handle client loop, "\
-            f"Client ID = [{client.ID}]"
+            f"Client ID = [{client._id}]"
         )
     
     def exchange_keys_with_client(self, transfer_agent: NetworkDataTransferer):
         self.logger.debug("Begining keys exchange with client.")
         self.lock.acquire()
         client_crypt = copy(self.crypt)
-        transfer_agent.send(self.crypt.export_encryption_keys())
+        transfer_agent.send(self.crypt.export_keys())
         time.sleep(0.1)
-        client_crypt.import_decryption_keys(transfer_agent.receive())
+        client_crypt.import_keys(transfer_agent.receive())
         time.sleep(0.1)
         self.logger.debug(f"Sending hmac key: {self.msg_guardian.get_key()}")
         transfer_agent.send(
@@ -483,36 +491,36 @@ class Server(threading.Thread):
             client_transfer_agent,
             client_crypt,
             new_id
-            )
+        )
         # create client entry
         new_client = ClientEntry(
-            client_transfer_agent,
+            new_id,
             address,
             client_setup_data["nickname"],
             client_setup_data["color"],
-            new_id,
+            client_transfer_agent,
             client_crypt,
             client_msg_guardian # for future usage
         )
         self.logger.debug(
             "New client registry successfully created, "\
-            f"Client ID=[{new_client.ID}]"
+            f"Client ID=[{new_client._id}]"
         )
         # add client to clients list
-        self.clients.update({new_client.ID: new_client})
+        self.clients.update({new_client._id: new_client})
         # create client's thread
-        new_client_thread = threading.Thread(
+        new_client_thread = Thread(
             target=self.handle_client,
             args=(new_client,),
-            name=f"{new_client.ID}_HANDLER"
+            name=f"{new_client._id}_HANDLER"
         )
         # add client's thread to threads list
         self.client_threads.update({
             int(new_client_thread.name.split("_")[0]): new_client_thread
         })
         # start new client's thread
-        self.logger.debug(f"Starting client [{new_client.ID}] thread.")
-        new_client.active = True
+        self.logger.debug(f"Starting client [{new_client._id}] thread.")
+        new_client.set_state(active=True)
         new_client_thread.start()
         self.logger.debug(f"Client thread started: {new_client_thread}")
 
@@ -527,7 +535,7 @@ class Server(threading.Thread):
                 new_client = self.setup_new_client(client_socket, client_address)
                 self.logger.info(
                     "New client connected, "\
-                    f"Client ID=[{new_client.ID}]"
+                    f"Client ID=[{new_client._id}]"
                 )
                 self.logger.debug(f"Online clients: {self.clients}")
                 self.logger.debug(f"Clients threads: {self.client_threads}")
@@ -539,7 +547,7 @@ class Server(threading.Thread):
     def setup_worker_threads(self):
         self.logger.debug("Setting up worker threads.")
         self.logger.debug("Starting broadcaster thread.")
-        self.broadcast_enqueuer_thread = threading.Thread(
+        self.broadcast_enqueuer_thread = Thread(
             target=self.broadcast_enqueuer,
             args=(self, self.broadcast_q, self.logger),
             name="BROADCASTER"
@@ -548,7 +556,7 @@ class Server(threading.Thread):
         self.logger.debug("Broadcaster thread started.")
 
         self.logger.debug("Starting replier thread.")
-        self.reply_enqueuer_thread = threading.Thread(
+        self.reply_enqueuer_thread = Thread(
             target=self.reply_enqueuer,
             args=(self, self.reply_q, self.logger),
             name="REPLIER"
@@ -557,7 +565,7 @@ class Server(threading.Thread):
         self.logger.debug("Replier thread started.")
 
         self.logger.debug("Starting dispatcher thread.")
-        self.dispatch_thread = threading.Thread(
+        self.dispatch_thread = Thread(
             target=self.dispatch,
             args=(self, self.dispatch_q, self.logger),
             name="DISPATCHER"
@@ -566,7 +574,7 @@ class Server(threading.Thread):
         self.logger.debug("Dispatcher thread started.")
 
         self.logger.debug("Starting connection handler thread.")
-        self.connections_thread = threading.Thread(
+        self.connections_thread = Thread(
             target=self.handle_connections,
             name="CONNECTION_HANDLER"
             )
@@ -596,32 +604,32 @@ class Server(threading.Thread):
             self.shutdown_q.task_done()
 
     def disconnect_client(self, client: ClientEntry):
-        client.active = False 
+        client.set_state(active=False)
         time.sleep(0.1)
-        self.logger.debug(f"Closing client socket. Client ID #[{client.ID}]")
+        self.logger.debug(f"Closing client socket. Client ID #[{client._id}]")
         client.transfer.close_socket()
         try:
-            self.clients.pop(client.ID)
+            self.clients.pop(client._id)
         except KeyError as e:
             self.logger.debug(
-                f"Client with ID [{client.ID}] is not on the list. "\
+                f"Client with ID [{client._id}] is not on the list. "\
                 f"Description={e}"
             )
         self.logger.info(
-            f"Client with ID #[{client.ID}] disconnected."
+            f"Client with ID #[{client._id}] disconnected."
         )
     
-    def consume_queue(self, q: queue.Queue, thread_name):
+    def consume_queue(self, q: Queue, thread_name):
         try:
             while not q.empty:
                 _ = q.get_nowait()
                 self.logger.debug(f"Queue item: {_}")
                 q.task_done()
-        except queue.Empty:
+        except Empty:
             pass
         self.logger.debug(f"{thread_name} queue consumed.")
 
-    def terminate_thread(self, t: threading.Thread, q: queue.Queue = None):
+    def terminate_thread(self, t: Thread, q: Queue = None):
         tn = t.name.lower()
         if q:
             if t.is_alive():
@@ -643,7 +651,7 @@ class Server(threading.Thread):
                 pass
         self.logger.debug(f"{t.name.lower()} thread terminated.")
 
-    def terminate_client_thread(self, thread: threading.Thread):
+    def terminate_client_thread(self, thread: Thread):
         attempts = 0
         while thread.is_alive() and attempts < 4:
             try:

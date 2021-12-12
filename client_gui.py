@@ -1,17 +1,18 @@
-﻿from time import sleep
+﻿from message import *
+from constants import *
+from time import sleep
 from tkinter import *
 from tkinter import ttk
 from tkinter import messagebox
 from tkinter import colorchooser
-import threading
-import re
-import queue
-from constants import *
+from threading import Thread
+from queue import Queue
 from client import Client
-from message import Message, Command, QueueSignal
-import logger
 from logging import handlers
 from transfer import NetworkDataTransferer, TCPIPv4DataTransferer
+import logger
+import re
+
 
 class ClientGui():
     def __init__(self, data_transferer: NetworkDataTransferer):
@@ -35,7 +36,7 @@ class ClientGui():
     except:
         pass
 
-    logging_q = queue.Queue()
+    logging_q = Queue()
     nickname_color: str = None
     lc = 1 # line count for the nickname color tag
     connected: bool = False
@@ -169,7 +170,7 @@ class ClientGui():
             (server_ip, server_port),
             self.data_transferer
         )
-        self.chatbox_thread = threading.Thread(
+        self.chatbox_thread = Thread(
             target=self.write_to_chat_box,
             name="CHATBOX"
         )

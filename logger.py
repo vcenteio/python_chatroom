@@ -1,5 +1,4 @@
-﻿from logging import Logger, Formatter, handlers, log
-from queue import Queue
+﻿from logging import Logger, Formatter
 from constants import *
 
 

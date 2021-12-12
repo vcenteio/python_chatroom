@@ -1,24 +1,14 @@
-﻿from logging import Logger, handlers
-import time
-import sys
-import random
-import struct
-import socket
-import queue
-import threading
-import json
-import hashlib
-import base64
-import math
-import hmac
-import select
-import secrets
-from cryptography.fernet import Fernet
-from constants import *
+﻿from constants import *
 from exceptions import *
+from logging import Logger
 from enum import Enum, IntEnum, auto, unique
 from dataclasses import dataclass, field
 from abc import ABC, abstractclassmethod, abstractmethod, abstractstaticmethod
+import time
+import json
+import hashlib
+import hmac
+import secrets
 
 
 class MessageType(IntEnum):
@@ -215,6 +205,8 @@ class HMACMessageGuardian(MessageGuardian):
         self.hmac_key = hmac_key if hmac_key else self.generate_key()
         self.logger = logger
 
+    HASH_SIZE = len(hashlib.sha256().digest())
+
     def set_key(self, hmac_key: bytes) -> None:
         self.hmac_key = hmac_key
     
@@ -230,8 +222,8 @@ class HMACMessageGuardian(MessageGuardian):
         return b"".join((hash, serialized))
 
     def unpack(self, data: bytes) -> Message:
-        msg_hash = data[:HASH_SIZE] 
-        msg_buffer = data[HASH_SIZE:] 
+        msg_hash = data[:self.HASH_SIZE] 
+        msg_buffer = data[self.HASH_SIZE:] 
         new_hash = hmac.new(self.hmac_key, msg_buffer, hashlib.sha256).digest()
         if msg_hash == new_hash:
             msg_dict = json.loads(msg_buffer)
@@ -241,6 +233,5 @@ class HMACMessageGuardian(MessageGuardian):
                 ErrorDescription._INTEGRITY_FAILURE
             )
 
-    @staticmethod
-    def generate_key():
-        return secrets.token_bytes(HASH_SIZE)
+    def generate_key(self):
+        return secrets.token_bytes(self.HASH_SIZE)
