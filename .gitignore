@@ -1,7 +1,9 @@
 ﻿__pycache__/
 logs/
+build/
 test*.py
 *.out
 *.log
 *.drawio
 *.ico
+*.bat

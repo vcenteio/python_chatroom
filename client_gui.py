@@ -9,14 +9,19 @@ from threading import Thread
 from queue import Queue
 from client import Client
 from logging import handlers
+from cryptographer import Cryptographer, RSAFernetCryptographer
 from transfer import NetworkDataTransferer, TCPIPv4DataTransferer
 import logger
 import re
 
 
 class ClientGui():
-    def __init__(self, data_transferer: NetworkDataTransferer):
+    def __init__(self, data_transferer: NetworkDataTransferer,
+    cryptographer: Cryptographer, msg_guardian: MessageGuardian
+    ):
         self.data_transferer = data_transferer
+        self.crypt = cryptographer
+        self.msg_guardian = msg_guardian
 
     root = Tk()
     root.title("Python Chatroom")
@@ -168,7 +173,9 @@ class ClientGui():
             nickname,
             self.nickname_color if self.nickname_color else "#000000",
             (server_ip, server_port),
-            self.data_transferer
+            self.data_transferer,
+            self.crypt,
+            self.msg_guardian
         )
         self.chatbox_thread = Thread(
             target=self.write_to_chat_box,
@@ -292,5 +299,9 @@ class ClientGui():
 
 
 if __name__ == "__main__":
-    gui_instance = ClientGui(data_transferer=TCPIPv4DataTransferer())
+    gui_instance = ClientGui(
+        data_transferer=TCPIPv4DataTransferer(),
+        cryptographer=RSAFernetCryptographer(),
+        msg_guardian=HMACMessageGuardian(DictBasedMessageFactory())
+    )
     gui_instance.run()
